@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<section class="page-hero reveal mb-4">
+    <p class="small-caps mb-2">{{ post.category }}</p>
+    <h1 class="section-title mb-2">{{ post.title }}</h1>
+    <p class="text-muted mb-0">{{ post.excerpt }}</p>
+</section>
+
+<section class="reveal">
+    <div class="auth-card auth-card-luxe p-4 p-lg-5">
+        {% if post.image %}
+            <img src="{{ post.image.url }}" class="img-fluid rounded mb-4" alt="{{ post.title }}">
+        {% endif %}
+
+        <div class="text-muted mb-3">{{ post.content|linebreaks }}</div>
+
+        <div class="mt-4 pt-2 border-top">
+            <a href="{% url 'blog' %}" class="btn btn-outline-dark btn-sm">Back to Blog</a>
+        </div>
+    </div>
+</section>
+{% endblock %}

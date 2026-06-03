@@ -1,0 +1,37 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<section class="page-hero mb-4 reveal">
+    <p class="small-caps mb-2">Secure Order</p>
+    <h1 class="section-title mb-2">Checkout</h1>
+    <p class="text-muted mb-0">Complete your order securely with premium fulfillment and quality-preserving delivery.</p>
+</section>
+
+<section class="row g-4 reveal">
+    <div class="col-lg-7">
+        <div class="auth-card auth-card-luxe p-4">
+            <form method="post" class="row g-3">
+                {% csrf_token %}
+                {% for field in form %}
+                    <div class="col-12 {% if field.name == 'city' or field.name == 'postal_code' or field.name == 'expiry' or field.name == 'cvv' %}col-md-6{% endif %}">
+                        <label class="form-label">{{ field.label }}</label>
+                        {{ field }}
+                    </div>
+                {% endfor %}
+                <div class="col-12">
+                    <button type="submit" class="btn btn-honey w-100">Place Order</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    <div class="col-lg-5">
+        <div class="summary-card summary-card-luxe p-4">
+            <h5 class="mb-3">Order Summary</h5>
+            <div class="d-flex justify-content-between mb-2"><span>Wildflower Raw Honey</span><span>$18.50</span></div>
+            <div class="d-flex justify-content-between mb-2"><span>Shipping</span><span>$4.50</span></div>
+            <hr>
+            <div class="d-flex justify-content-between fw-bold"><span>Total</span><span>$23.00</span></div>
+        </div>
+    </div>
+</section>
+{% endblock %}

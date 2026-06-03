@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<section class="reveal">
+    <div class="row g-4 align-items-start">
+        <div class="col-lg-6">
+            <img src="{{ product.image_url }}" class="img-fluid rounded-4 detail-image" alt="{{ product.name }}">
+        </div>
+        <div class="col-lg-6">
+            <p class="small-caps mb-2">Signature Jar</p>
+            <h1 class="section-title mb-2">{{ product.name }}</h1>
+            <p class="text-muted mb-3">{{ product.short_description }}</p>
+            <p class="fs-5 mb-4">{{ product.description }}</p>2
+            <div class="d-flex align-items-center gap-3 mb-4">
+                <span class="price-large">${{ product.price }}</span>
+                <span class="badge stock-badge">In Stock: {{ product.stock }}</span>
+            </div>
+            <a href="{% url 'checkout' %}" class="btn btn-honey btn-lg">Buy Now</a>
+        </div>
+    </div>
+</section>
+{% endblock %}

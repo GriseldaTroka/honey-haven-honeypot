@@ -1,0 +1,52 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<section class="page-hero mb-4 reveal">
+  <div class="d-flex justify-content-between align-items-start flex-wrap gap-3">
+    <div>
+      <p class="small-caps mb-2">Attack Journeys</p>
+      <h1 class="section-title mb-1">Attack Journey Analysis</h1>
+      <p class="text-muted mb-0">Aggregated attacker journeys with phases, metrics, and detailed events.</p>
+    </div>
+  </div>
+</section>
+
+<section class="auth-card auth-card-luxe p-4 mb-4">
+  <form class="row g-3 align-items-end" id="journey-filters">
+    <div class="col-md-3">
+      <label class="form-label fw-semibold">Lookback (hours)</label>
+      <input type="number" class="form-control" id="lookback" value="24">
+    </div>
+    <div class="col-md-3">
+      <label class="form-label fw-semibold">Proximity (s)</label>
+      <input type="number" class="form-control" id="proximity" value="900">
+    </div>
+    <div class="col-md-3">
+      <label class="form-label fw-semibold">Limit</label>
+      <input type="number" class="form-control" id="limit" value="200">
+    </div>
+    <div class="col-md-3 d-grid">
+      <button id="refresh-journeys" class="btn btn-dark">Refresh</button>
+    </div>
+  </form>
+</section>
+
+<section class="row g-4">
+  <div class="col-lg-4 reveal">
+    <div class="auth-card auth-card-luxe p-4 mb-4">
+      <h5>Journeys</h5>
+      <div id="journey-list">Loading…</div>
+    </div>
+  </div>
+  <div class="col-lg-8 reveal">
+    <div class="auth-card auth-card-luxe p-4 mb-4">
+      <h5>Journey Details</h5>
+      <div id="journey-detail">Select a journey to see details.</div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{% static 'js/journeys.js' %}"></script>
+{% endblock %}

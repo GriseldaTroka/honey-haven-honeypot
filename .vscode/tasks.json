@@ -1,0 +1,77 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Dev: Run Django server",
+      "type": "shell",
+      "command": "python",
+      "args": ["manage.py", "runserver", "0.0.0.0:8000"],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Docker: Compose up",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "up", "-d", "--build", "--profile", "observability", "--profile", "honeypots"],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Docker: Compose down",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "down"],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Django: Migrate",
+      "type": "shell",
+      "command": "python",
+      "args": ["manage.py", "migrate"],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Django: Test",
+      "type": "shell",
+      "command": "python",
+      "args": ["manage.py", "test"],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Django: Check",
+      "type": "shell",
+      "command": "python",
+      "args": ["manage.py", "check"],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Logs: Tail application log",
+      "type": "shell",
+      "command": "powershell",
+      "args": ["-NoProfile", "-Command", "Get-Content -Path logs\\honey-web.log -Tail 200 -Wait"],
+      "group": "none",
+      "problemMatcher": []
+    },
+    {
+      "label": "Backup: Create archive",
+      "type": "shell",
+      "command": "python",
+      "args": ["scripts/backup_project.py"],
+      "group": "none",
+      "problemMatcher": []
+    },
+    {
+      "label": "Cleanup: Remove caches",
+      "type": "shell",
+      "command": "powershell",
+      "args": ["-NoProfile", "-Command", "Get-ChildItem -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force; Get-ChildItem -Recurse -Include *.pyc,*.pyo -File | Remove-Item -Force"],
+      "group": "none",
+      "problemMatcher": []
+    }
+  ]
+}

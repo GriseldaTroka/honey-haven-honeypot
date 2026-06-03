@@ -1,0 +1,136 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="row g-4">
+    <div class="col-12">
+        <div class="card glass-card border-0 shadow-sm">
+            <div class="card-body p-4 p-lg-5">
+                <p class="small-caps mb-2">Canary Operations</p>
+                <h1 class="section-title mb-2">Canary Token Manager</h1>
+                <p class="text-muted mb-0">Create, rotate, and revoke trap tokens for phishing, exfiltration, and document leaks.</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-3">
+        <div class="stat-card h-100">
+            <div class="label">Active</div>
+            <div class="value">{{ active_count }}</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card h-100">
+            <div class="label">Revoked</div>
+            <div class="value">{{ revoked_count }}</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card h-100">
+            <div class="label">Hits</div>
+            <div class="value">{{ hit_count }}</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card h-100">
+            <div class="label">Beacon Base</div>
+            <div class="value small">/beacon/</div>
+        </div>
+    </div>
+
+    <div class="col-lg-4">
+        <div class="card glass-card border-0 shadow-sm h-100">
+            <div class="card-body p-4">
+                <h5 class="mb-3">Create Token</h5>
+                <form method="post" class="vstack gap-3">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="create">
+                    <div>
+                        <label class="form-label">Label</label>
+                        <input type="text" class="form-control form-control-lg" name="label" placeholder="Quarterly audit decoy" required>
+                    </div>
+                    <div>
+                        <label class="form-label">Destination URL</label>
+                        <input type="url" class="form-control" name="destination_url" placeholder="https://example.com/report.pdf">
+                    </div>
+                    <div>
+                        <label class="form-label">Notes</label>
+                        <textarea class="form-control" name="notes" rows="4" placeholder="Where the token was planted"></textarea>
+                    </div>
+                    <button class="btn btn-honey" type="submit">Generate token</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-8">
+        <div class="card glass-card border-0 shadow-sm h-100">
+            <div class="card-body p-4">
+                <div class="table-responsive">
+                    <table class="table align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th>Label</th>
+                                <th>Token</th>
+                                <th>Status</th>
+                                <th>Hits</th>
+                                <th>Last Hit</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for token in tokens %}
+                                <tr>
+                                    <td>
+                                        <strong>{{ token.label }}</strong><br>
+                                        <small class="text-muted">{{ token.destination_url|default:'No destination' }}</small>
+                                    </td>
+                                    <td class="text-monospace">{{ token.token }}</td>
+                                    <td>
+                                        <span class="badge {% if token.is_active %}text-bg-success{% else %}text-bg-secondary{% endif %}">{% if token.is_active %}Active{% else %}Revoked{% endif %}</span>
+                                    </td>
+                                    <td>{{ token.hit_count }}</td>
+                                    <td>{{ token.last_hit_at|default:'—' }}</td>
+                                    <td>
+                                        <div class="d-flex gap-2 flex-wrap justify-content-end">
+                                            <form method="post" class="d-inline">
+                                                {% csrf_token %}
+                                                <input type="hidden" name="token_id" value="{{ token.id }}">
+                                                {% if token.is_active %}
+                                                    <input type="hidden" name="action" value="revoke">
+                                                    <button class="btn btn-sm btn-outline-secondary" type="submit">Revoke</button>
+                                                {% else %}
+                                                    <input type="hidden" name="action" value="rotate">
+                                                    <button class="btn btn-sm btn-outline-primary" type="submit">Rotate</button>
+                                                {% endif %}
+                                            </form>
+                                            <button class="btn btn-sm btn-outline-dark" type="button" data-copy="{{ request.scheme }}://{{ request.get_host }}{% url 'canary_beacon' token.token %}">Copy URL</button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            {% empty %}
+                                <tr><td colspan="6" class="text-muted">No canary tokens created yet.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+document.querySelectorAll('[data-copy]').forEach((button) => {
+    button.addEventListener('click', async () => {
+        try {
+            await navigator.clipboard.writeText(button.dataset.copy);
+            button.textContent = 'Copied';
+            setTimeout(() => button.textContent = 'Copy URL', 1200);
+        } catch (error) {
+            console.error(error);
+        }
+    });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<section class="row justify-content-center reveal">
+    <div class="col-lg-6">
+        <div class="auth-card auth-card-luxe p-4 p-lg-5">
+            <p class="small-caps mb-2">Membership Signup</p>
+            <h1 class="h3 mb-3">Create Your Account</h1>
+            <p class="text-muted mb-4">Join Honey Haven for exclusive offers and seasonal drops.</p>
+            <form method="post" class="row g-3">
+                {% csrf_token %}
+                {% for field in form %}
+                <div class="col-12 {% if field.name == 'first_name' or field.name == 'last_name' %}col-md-6{% endif %}">
+                    <label class="form-label">{{ field.label }}</label>
+                    {{ field }}
+                    {% if field.errors %}<small class="text-danger">{{ field.errors|join:', ' }}</small>{% endif %}
+                </div>
+                {% endfor %}
+                <div class="col-12">
+                    <button class="btn btn-honey w-100" type="submit">Create Account</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</section>
+{% endblock %}

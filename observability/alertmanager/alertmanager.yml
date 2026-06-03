@@ -1,0 +1,16 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname']
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 1h
+  receiver: 'noop'
+
+receivers:
+  - name: 'noop'
+    webhook_configs:
+      - url: 'http://web:8000/webhook/honeypot/'
+
+# Example: configure email/discord/opsgenie receivers as needed in production

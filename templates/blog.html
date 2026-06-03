@@ -1,0 +1,37 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<section class="page-hero reveal mb-4">
+    <p class="small-caps mb-2">Honey Haven Journal</p>
+    <h1 class="section-title mb-2">Blog & Learning Hub</h1>
+    <p class="text-muted mb-0">Read our history, practical beekeeping guides, and recipe inspiration from the Honey Haven team.</p>
+</section>
+
+<section class="reveal">
+    <div class="row g-4">
+        {% for post in posts %}
+        <div class="col-md-6 col-xl-4">
+            <article class="card product-card product-card-luxe h-100 border-0">
+                {% if post.image %}
+                <img src="{{ post.image.url }}" class="card-img-top" alt="{{ post.title }}">
+                {% endif %}
+                <div class="card-body d-flex flex-column">
+                    <span class="small-caps mb-2">{{ post.category }}</span>
+                    <h5 class="card-title">{{ post.title }}</h5>
+                    <p class="text-muted mb-4">{{ post.excerpt }}</p>
+                    <div class="mt-auto">
+                        <a href="{% url 'blog_detail' post.slug %}" class="btn btn-sm btn-outline-dark">Read article</a>
+                    </div>
+                </div>
+            </article>
+        </div>
+        {% empty %}
+        <div class="col-12">
+            <div class="auth-card auth-card-luxe p-4">
+                <p class="mb-0 text-muted">No articles published yet. Check back soon.</p>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}

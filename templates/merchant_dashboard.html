@@ -1,0 +1,69 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<section class="page-hero mb-4 reveal">
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+            <p class="small-caps mb-2">Payments And Support</p>
+            <h1 class="section-title mb-1">Merchant Dashboard</h1>
+            <p class="text-muted mb-0">Fake payment records, invoice traces, and support activity.</p>
+        </div>
+        <div class="d-flex gap-2">
+            <span class="badge text-bg-success">Payments Online</span>
+            <span class="badge text-bg-dark">Live Support Feed</span>
+        </div>
+    </div>
+</section>
+
+<section class="row g-4 mb-4">
+    <div class="col-md-4 reveal"><div class="metric-card metric-card-luxe"><h6>Captured Payments</h6><p>{{ payments|length }}</p></div></div>
+    <div class="col-md-4 reveal"><div class="metric-card metric-card-luxe"><h6>Open Tickets</h6><p>{{ tickets|length }}</p></div></div>
+    <div class="col-md-4 reveal"><div class="metric-card metric-card-luxe"><h6>Webhook Health</h6><p>Healthy</p></div></div>
+</section>
+
+<section class="row g-4">
+    <div class="col-lg-7 reveal">
+        <div class="auth-card auth-card-luxe p-4 h-100">
+            <h5 class="mb-3">Recent Payments</h5>
+            <div class="table-responsive">
+                <table class="table table-hover align-middle table-luxe">
+                    <thead><tr><th>Payment</th><th>Amount</th><th>Status</th><th>Card</th></tr></thead>
+                    <tbody>
+                        {% for payment in payments %}
+                        <tr>
+                            <td>{{ payment.payment_id }}</td>
+                            <td>{{ payment.amount }} {{ payment.currency }}</td>
+                            <td>{{ payment.status }}</td>
+                            <td>**** {{ payment.card_last4 }}</td>
+                        </tr>
+                        {% empty %}
+                        <tr><td colspan="4" class="text-muted">No payment records yet.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-5 reveal">
+        <div class="auth-card auth-card-luxe p-4 h-100">
+            <h5 class="mb-3">Support Tickets</h5>
+            <div class="table-responsive">
+                <table class="table table-hover align-middle table-luxe">
+                    <thead><tr><th>Ticket</th><th>Priority</th><th>Status</th></tr></thead>
+                    <tbody>
+                        {% for ticket in tickets %}
+                        <tr>
+                            <td>{{ ticket.ticket_id }}</td>
+                            <td>{{ ticket.priority }}</td>
+                            <td>{{ ticket.status }}</td>
+                        </tr>
+                        {% empty %}
+                        <tr><td colspan="3" class="text-muted">No support tickets yet.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

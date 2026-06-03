@@ -1,0 +1,113 @@
+version: "3.9"
+
+# Production-oriented compose example
+# Use this as a deployment reference. Keep secrets out of this file and inject
+# them through Docker secrets or environment files managed by your platform.
+
+services:
+  web:
+    build:
+      context: ..
+    command: gunicorn honeytrap.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 60
+    env_file:
+      - ../.env
+    environment:
+      DJANGO_SETTINGS_MODULE: honeytrap.settings_prod
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      DJANGO_DEBUG: "False"
+    secrets:
+      - django_secret
+    volumes:
+      - honey_logs:/var/log/honey
+      - honey_media:/app/media
+    restart: unless-stopped
+    expose:
+      - "8000"
+    networks:
+      - frontend
+      - backend
+
+  alert-worker:
+    build:
+      context: ..
+    command: python manage.py dispatch_alerts --loop --interval 30
+    env_file:
+      - ../.env
+    environment:
+      DJANGO_SETTINGS_MODULE: honeytrap.settings_prod
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    secrets:
+      - django_secret
+    volumes:
+      - honey_logs:/var/log/honey
+    restart: unless-stopped
+    networks:
+      - backend
+
+  sandbox-worker:
+    build:
+      context: ..
+    command: python manage.py sandbox_worker --loop --interval 60
+    env_file:
+      - ../.env
+    environment:
+      DJANGO_SETTINGS_MODULE: honeytrap.settings_prod
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    secrets:
+      - django_secret
+    volumes:
+      - honey_logs:/var/log/honey
+    restart: unless-stopped
+    networks:
+      - backend
+
+  anomaly-detect:
+    build:
+      context: ..
+    command: python manage.py anomaly_detect --loop --interval 300
+    env_file:
+      - ../.env
+    environment:
+      DJANGO_SETTINGS_MODULE: honeytrap.settings_prod
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    secrets:
+      - django_secret
+    volumes:
+      - honey_logs:/var/log/honey
+    restart: unless-stopped
+    networks:
+      - backend
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+      - honey_logs:/var/log/honey
+    restart: unless-stopped
+    networks:
+      - frontend
+
+secrets:
+  django_secret:
+    file: ../infra/secrets/django_secret
+
+volumes:
+  honey_logs:
+  honey_media:
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true

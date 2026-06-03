@@ -1,0 +1,19 @@
+/var/www/app/logs/*.log {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    create 0640 root root
+}
+
+./logs/*.log {
+    daily
+    rotate 7
+    missingok
+    notifempty
+    compress
+    copytruncate
+}

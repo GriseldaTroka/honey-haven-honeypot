@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<section class="row justify-content-center reveal">
+    <div class="col-lg-5">
+        <div class="auth-card auth-card-luxe p-4 p-lg-5">
+            <p class="small-caps mb-2">Members Access</p>
+            <h1 class="h3 mb-3">Welcome Back</h1>
+            <p class="text-muted mb-4">Sign in to continue shopping your favorite honey blends.</p>
+            <form method="post" class="vstack gap-3">
+                {% csrf_token %}
+                <div>
+                    <label class="form-label">Username</label>
+                    <input type="text" name="username" class="form-control" required>
+                </div>
+                <div>
+                    <label class="form-label">Password</label>
+                    <input type="password" name="password" class="form-control" required>
+                </div>
+                <button class="btn btn-honey w-100" type="submit">Sign In</button>
+            </form>
+            <p class="mt-3 mb-0 text-muted">No account? <a href="{% url 'register' %}">Create one</a>.</p>
+        </div>
+    </div>
+</section>
+{% endblock %}

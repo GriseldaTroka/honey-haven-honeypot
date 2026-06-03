@@ -1,0 +1,127 @@
+---
+- name: Provision Honey Haven honeypot VM
+  hosts: honeypot
+  become: true
+  vars:
+    app_dir: /opt/honey
+    env_file: /etc/honey/honey.env
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: true
+
+    - name: Install required packages
+      apt:
+        name:
+          - docker.io
+          - docker-compose-plugin
+          - python3
+          - python3-venv
+          - git
+          - ufw
+        state: present
+
+    - name: Enable and start Docker
+      service:
+        name: docker
+        enabled: true
+        state: started
+
+    - name: Create application directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - "{{ app_dir }}"
+        - /etc/honey
+        - /opt/honey/logs
+        - /opt/honey/media
+        - /opt/honey/infra/secrets
+
+    - name: Copy environment file template
+      copy:
+        src: ../../.env.example
+        dest: "{{ env_file }}"
+        owner: root
+        group: root
+        mode: "0640"
+        remote_src: false
+
+    - name: Copy Docker secret example placeholder
+      copy:
+        src: ../secrets/django_secret.example
+        dest: /opt/honey/infra/secrets/django_secret
+        owner: root
+        group: root
+        mode: "0600"
+        remote_src: false
+      ignore_errors: true
+
+    - name: Deploy application files
+      synchronize:
+        src: ../../
+        dest: "{{ app_dir }}"
+        recursive: true
+        delete: false
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=.venv"
+          - "--exclude=logs"
+          - "--exclude=media"
+
+    - name: Install systemd unit files
+      copy:
+        src: "../systemd/{{ item }}"
+        dest: "/etc/systemd/system/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - honey-web.service
+        - honey-worker.service
+        - honey-sandbox-worker.service
+        - honey-anomaly-detect.service
+
+    - name: Reload systemd
+      systemd:
+        daemon_reload: true
+
+    - name: Enable services
+      systemd:
+        name: "{{ item }}"
+        enabled: true
+      loop:
+        - honey-web.service
+        - honey-worker.service
+        - honey-sandbox-worker.service
+        - honey-anomaly-detect.service
+
+    - name: Start services
+      systemd:
+        name: "{{ item }}"
+        state: started
+      loop:
+        - honey-web.service
+        - honey-worker.service
+        - honey-sandbox-worker.service
+        - honey-anomaly-detect.service
+
+    - name: Configure UFW
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - 22
+        - 80
+        - 443
+        - 8000
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+        policy: deny
+        direction: incoming

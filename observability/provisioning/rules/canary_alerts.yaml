@@ -1,0 +1,16 @@
+# Canary alert rules copied into provisioning location
+apiVersion: 1
+groups:
+  - name: canary-alerts
+    interval: 60s
+    rules:
+      - uid: canary-hit-rule
+        title: Canary token hit
+        condition: "sum(count_over_time({job=\"honey-web\", event=\"alert_queue\", alert_type=\"CANARY_HIT\"}[5m])) > 0"
+        data:
+          - refId: A
+            query: |
+              sum(count_over_time({job="honey-web", event="alert_queue", alert_type="CANARY_HIT"} [5m]))
+        annotations:
+          summary: "A canary token was hit"
+          description: "Detects any canary token hits in the last 5 minutes."

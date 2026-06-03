@@ -1,0 +1,72 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://log-server:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: honey-web
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: honey-web
+          __path__: /var/log/honey/**/*.log
+    pipeline_stages:
+      - json:
+          expressions:
+            event:
+            alert_type:
+            verdict:
+            country:
+            country_code:
+      - labels:
+          event:
+          alert_type:
+          verdict:
+          country:
+          country_code:
+
+  - job_name: honey-honeypots-cowrie
+    static_configs:
+      - targets: [ localhost ]
+        labels:
+          job: cowrie
+          source: cowrie
+          __path__: /var/log/honey/cowrie/**/*.log
+    pipeline_stages:
+      - json:
+          expressions:
+            message:
+      - labels:
+          source:
+
+  - job_name: honey-honeypots-dionaea
+    static_configs:
+      - targets: [ localhost ]
+        labels:
+          job: dionaea
+          source: dionaea
+          __path__: /var/log/honey/dionaea/**
+    pipeline_stages:
+      - regex:
+          expression: "(?P<message>.*)"
+      - labels:
+          source:
+
+  - job_name: honey-honeypots-conpot
+    static_configs:
+      - targets: [ localhost ]
+        labels:
+          job: conpot
+          source: conpot
+          __path__: /var/log/honey/conpot/**
+    pipeline_stages:
+      - regex:
+          expression: "(?P<message>.*)"
+      - labels:
+          source:

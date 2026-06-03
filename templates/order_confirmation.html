@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<section class="page-hero reveal mb-4">
+    <p class="small-caps mb-2">Success</p>
+    <h1 class="section-title mb-2">Your Order Has Been Sent</h1>
+    <p class="text-muted mb-0">Thank you for your order. We're preparing your honey with care.</p>
+</section>
+
+<section class="reveal">
+    <div class="auth-card auth-card-luxe p-4 mx-auto" style="max-width: 600px;">
+        <div class="text-center">
+            <h5 class="mb-3">Order Confirmation</h5>
+            <p class="text-muted mb-4">
+                A confirmation email has been sent to your registered email address. 
+                You can track your order status from your account dashboard.
+            </p>
+            
+            <div class="mb-4">
+                <svg class="mx-auto" style="width: 60px; height: 60px; color: #d4a574;" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
+                </svg>
+            </div>
+
+            <h6 class="mb-3">What's Next?</h6>
+            <ul class="list-unstyled text-muted" style="text-align: left; max-width: 400px; margin: 0 auto;">
+                <li class="mb-2">✓ Your order is being prepared</li>
+                <li class="mb-2">✓ You'll receive a shipping notification</li>
+                <li class="mb-2">✓ Your honey will arrive within 5-7 business days</li>
+            </ul>
+
+            <div class="mt-4">
+                <a href="{% url 'home' %}" class="btn btn-honey">Return to Home</a>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

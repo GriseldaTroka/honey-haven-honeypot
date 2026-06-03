@@ -1,0 +1,120 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block content %}
+<section class="page-hero mb-4 reveal">
+    <div class="d-flex justify-content-between align-items-start flex-wrap gap-3">
+        <div>
+            <p class="small-caps mb-2">Attacker Replay</p>
+            <h1 class="section-title mb-1">Attack Timeline Replay</h1>
+            <p class="text-muted mb-0">Chronological view of page visits, payloads, login attempts, alerts, and system responses.</p>
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+            <a href="{% url 'research_analytics' %}" class="btn btn-sm btn-outline-dark">Back to Analytics</a>
+            <a href="{% url 'alert_review' %}" class="btn btn-sm btn-outline-dark">Alert Review</a>
+        </div>
+    </div>
+</section>
+
+<section class="auth-card auth-card-luxe p-4 mb-4 reveal">
+    <form method="get" class="row g-3 align-items-end">
+        <div class="col-md-3">
+            <label class="form-label fw-semibold" for="ip">IP Filter</label>
+            <input type="text" class="form-control" id="ip" name="ip" value="{{ selected_ip }}" placeholder="198.51.100.24">
+        </div>
+        <div class="col-md-3">
+            <label class="form-label fw-semibold" for="session">Session Filter</label>
+            <input type="text" class="form-control" id="session" name="session" value="{{ selected_session }}" placeholder="derived session id">
+        </div>
+        <div class="col-md-3">
+            <label class="form-label fw-semibold" for="attack_type">Attack Type</label>
+            <select class="form-select" id="attack_type" name="attack_type">
+                {% for value, label in attack_type_choices %}
+                    <option value="{{ value }}" {% if value == selected_attack_type %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-2">
+            <label class="form-label fw-semibold" for="limit">Limit</label>
+            <select class="form-select" id="limit" name="limit">
+                {% for value in limit_choices %}
+                    <option value="{{ value }}" {% if value|stringformat:'s' == request.GET.limit %}selected{% endif %}>{{ value }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-1 d-grid">
+            <button class="btn btn-dark" type="submit">Go</button>
+        </div>
+    </form>
+    <div class="mt-3 d-flex flex-wrap gap-2 small text-muted">
+        <span class="badge text-bg-dark">Synthetic session keys are derived from client fingerprint</span>
+        <span class="badge text-bg-secondary">Filters are safe to change at any time</span>
+    </div>
+</section>
+
+<section class="row g-4 mb-4">
+    <div class="col-md-4 reveal"><div class="metric-card metric-card-luxe"><h6>Events</h6><p>{{ story_summary.total }}</p></div></div>
+    <div class="col-md-4 reveal"><div class="metric-card metric-card-luxe"><h6>Alerts</h6><p>{{ story_summary.alerts }}</p></div></div>
+    <div class="col-md-4 reveal"><div class="metric-card metric-card-luxe"><h6>Sessions</h6><p>{{ session_options|length }}</p></div></div>
+</section>
+
+<section class="row g-4">
+    <div class="col-lg-8 reveal">
+        <div class="auth-card auth-card-luxe p-4">
+            <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+                <h5 class="mb-0">Replay Timeline</h5>
+                <span class="text-muted small">Oldest to newest</span>
+            </div>
+            <div class="timeline-feed">
+                        <div id="timeline-replay-controls" class="mb-3 d-flex gap-2 align-items-center">
+                            <button id="replay-play" class="btn btn-sm btn-outline-dark">Play</button>
+                            <button id="replay-pause" class="btn btn-sm btn-outline-dark">Pause</button>
+                            <label class="mb-0 ms-2">Speed</label>
+                            <select id="replay-speed" class="form-select form-select-sm w-auto ms-1">
+                                <option value="1">1x</option>
+                                <option value="2">2x</option>
+                                <option value="4">4x</option>
+                            </select>
+                        </div>
+                        <div id="timeline-events">
+                            <p class="text-muted mb-0">Loading timeline events…</p>
+                        </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-4 reveal">
+        <div class="auth-card auth-card-luxe p-4 mb-4">
+            <h5 class="mb-3">Story Summary</h5>
+            <ul class="list-unstyled mb-0">
+                <li class="mb-2"><strong>Page visits:</strong> {{ story_summary.pages }}</li>
+                <li class="mb-2"><strong>Login attempts:</strong> {{ story_summary.logins }}</li>
+                <li class="mb-2"><strong>Telemetry events:</strong> {{ story_summary.telemetry }}</li>
+                <li class="mb-2"><strong>Journey markers:</strong> {{ story_summary.journeys }}</li>
+            </ul>
+        </div>
+        <div class="auth-card auth-card-luxe p-4 mb-4">
+            <h5 class="mb-3">Top Session Keys</h5>
+            <ul class="list-unstyled mb-0">
+                {% for item in session_options %}
+                    <li class="mb-2 d-flex justify-content-between gap-2"><span class="text-break">{{ item.session_id }}</span><span class="badge text-bg-light">{{ item.total }}</span></li>
+                {% empty %}
+                    <li class="text-muted">No session keys derived yet.</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% if selected_story %}
+            <div class="auth-card auth-card-luxe p-4">
+                <h5 class="mb-3">Most Recent Match</h5>
+                <p class="mb-2"><strong>{{ selected_story.label }}</strong></p>
+                <p class="text-muted small mb-2">{{ selected_story.detail }}</p>
+                <p class="text-muted small mb-0">{{ selected_story.response }}</p>
+            </div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{% static 'js/timeline_replay.js' %}"></script>
+{% endblock %}

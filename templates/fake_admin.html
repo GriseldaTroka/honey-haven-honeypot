@@ -1,0 +1,59 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<section class="page-hero mb-4 reveal">
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+            <p class="small-caps mb-2">Merchant Operations</p>
+            <h1 class="section-title mb-1">Merchant Control Center</h1>
+            <p class="text-muted mb-0">Operational dashboard for store owners and fulfillment teams.</p>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+            <a href="{% url 'research_analytics' %}" class="btn btn-sm btn-outline-dark">Research Analytics</a>
+            <span class="badge text-bg-success">System Online</span>
+        </div>
+    </div>
+</section>
+
+<section class="row g-4 mb-4">
+    <div class="col-md-4 reveal"><div class="metric-card metric-card-luxe"><h6>Today's Revenue</h6><p>$4,283</p></div></div>
+    <div class="col-md-4 reveal"><div class="metric-card metric-card-luxe"><h6>Open Orders</h6><p>126</p></div></div>
+    <div class="col-md-4 reveal"><div class="metric-card metric-card-luxe"><h6>Payment Failures</h6><p>3</p></div></div>
+</section>
+
+<section class="reveal">
+    <div class="auth-card auth-card-luxe p-4">
+        <h5 class="mb-3">Recent Login Attempts</h5>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle table-luxe">
+                <thead>
+                    <tr>
+                        <th>User</th>
+                        <th>IP Address</th>
+                        <th>Status</th>
+                        <th>Timestamp</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in recent_activity %}
+                    <tr>
+                        <td>{{ item.username|default:'(unknown)' }}</td>
+                        <td>{{ item.ip_address }}</td>
+                        <td>
+                            {% if item.success %}
+                                <span class="badge text-bg-success">Success</span>
+                            {% else %}
+                                <span class="badge text-bg-danger">Failed</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ item.timestamp }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="4" class="text-muted">No login data recorded yet.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</section>
+{% endblock %}

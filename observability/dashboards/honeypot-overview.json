@@ -1,0 +1,107 @@
+{
+  "uid": "honey-honeypot-overview",
+  "title": "Honey Haven Overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Alert Queue Volume",
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "loki", "uid": "Loki"},
+      "targets": [
+        {
+          "expr": "sum(count_over_time({job=\"honey-web\", event=\"alert_queue\"} [5m]))",
+          "refId": "A"
+        }
+      ],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "orientation": "horizontal"}
+    },
+    {
+      "type": "timeseries",
+      "title": "Alert Volume by Type",
+      "gridPos": {"h": 8, "w": 9, "x": 6, "y": 0},
+      "datasource": {"type": "loki", "uid": "Loki"},
+      "targets": [
+        {
+          "expr": "sum by (alert_type) (count_over_time({job=\"honey-web\", event=\"alert_queue\"} [5m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Upload Verdicts",
+      "gridPos": {"h": 8, "w": 9, "x": 15, "y": 0},
+      "datasource": {"type": "loki", "uid": "Loki"},
+      "targets": [
+        {
+          "expr": "sum by (verdict) (count_over_time({job=\"honey-web\", event=\"upload_trap\"} [15m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Threat-Intel Geography",
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "loki", "uid": "Loki"},
+      "targets": [
+        {
+          "expr": "{job=\"honey-web\", event=\"threat_intel\"}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Latest Alert Events",
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "loki", "uid": "Loki"},
+      "targets": [
+        {
+          "expr": "{job=\"honey-web\", event=\"alert_queue\"}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Latest Upload Traps",
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 18},
+      "datasource": {"type": "loki", "uid": "Loki"},
+      "targets": [
+        {
+          "expr": "{job=\"honey-web\", event=\"upload_trap\"}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Threat-Intel Geography Volume",
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 18},
+      "datasource": {"type": "loki", "uid": "Loki"},
+      "targets": [
+        {
+          "expr": "sum by (country) (count_over_time({job=\"honey-web\", event=\"threat_intel\"} [1h]))",
+          "refId": "A"
+        }
+      ]
+    }
+    ,
+    {
+      "type": "table",
+      "title": "Canary Token Hits",
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 28},
+      "datasource": {"type": "loki", "uid": "Loki"},
+      "targets": [
+        {
+          "expr": "{job=\"honey-web\", event=\"alert_queue\", alert_type=\"CANARY_HIT\"}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

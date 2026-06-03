@@ -1,0 +1,36 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<section class="reveal">
+    <div class="video-container mx-auto" style="max-width: 800px; margin-top: 60px;">
+        <video 
+            id="loadingVideo" 
+            class="loading-video" 
+            autoplay 
+            muted 
+            playsinline
+            style="width: 100%; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.1);"
+            onended="redirectToConfirmation()">
+            <source src="/static/videos/video.mp4" type="video/mp4">
+            Your browser doesn't support HTML5 video. Please upgrade to a modern browser.
+        </video>
+    </div>
+</section>
+
+<script>
+    function redirectToConfirmation() {
+        window.location.href = "{% url 'order_confirmation' %}";
+    }
+
+    // Fallback: redirect after 60 seconds if video doesn't end
+    setTimeout(() => {
+        const video = document.getElementById('loadingVideo');
+        if (video && !video.ended) {
+            // Video is still playing, let it finish
+        } else if (!video || video.ended) {
+            // Video ended or missing, redirect
+            redirectToConfirmation();
+        }
+    }, 60000);
+</script>
+{% endblock %}
