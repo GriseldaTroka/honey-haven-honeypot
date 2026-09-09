@@ -40,3 +40,23 @@ class ResearchAccessControlTests(TestCase):
                 resp = self.client.get(url)
                 self.assertEqual(resp.status_code, 200, msg=f"Staff cannot access {url}")
                 self.client.logout()
+
+    def test_staff_login_redirect_honors_next_target(self):
+        self.client.logout()
+        user = User.objects.create_user(username="soc-staff", password="pass")
+        user.is_staff = True
+        user.save(update_fields=["is_staff"])
+
+        response = self.client.post(
+            reverse("login"),
+            {"username": "soc-staff", "password": "pass", "next": "http://127.0.0.1:5173/soc"},
+            follow=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "http://127.0.0.1:5173/soc")
+
+        status = self.client.get(reverse("staff_status"))
+        self.assertEqual(status.status_code, 200)
+        self.assertTrue(status.json()["authenticated"])
+        self.assertTrue(status.json()["staff"])

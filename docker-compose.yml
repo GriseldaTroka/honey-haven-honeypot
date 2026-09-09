@@ -1,245 +1,183 @@
-version: "3.9"
-
 services:
-  web:
-    build:
-      context: .
-    command: python manage.py runserver 0.0.0.0:8000
-    ports:
-      - "8000:8000"
-    environment:
-      DJANGO_SETTINGS_MODULE: honeytrap.settings
-      PYTHONDONTWRITEBYTECODE: "1"
-      PYTHONUNBUFFERED: "1"
-      HONEYPOT_DISCORD_WEBHOOK_URL: ""
-      HONEYPOT_TELEGRAM_WEBHOOK_URL: ""
-      HONEYPOT_ALERT_EMAIL: ""
-    volumes:
-      - .:/app
-    version: "3.9"
+    web:
+      build:
+        context: .
+      command: python manage.py runserver 0.0.0.0:8000
+      ports:
+        - "8000:8000"
+      environment:
+        DJANGO_SETTINGS_MODULE: honeytrap.settings
+        PYTHONDONTWRITEBYTECODE: "1"
+        PYTHONUNBUFFERED: "1"
+        HONEYPOT_DISCORD_WEBHOOK_URL: ""
+        HONEYPOT_TELEGRAM_WEBHOOK_URL: ""
+        HONEYPOT_ALERT_EMAIL: ""
+      volumes:
+        - .:/app
+      restart: unless-stopped
+      secrets:
+        - django_secret
+      networks:
+        - telemetry
+        - honeynet
+      logging:
+        driver: "json-file"
+        options:
+          max-size: "50m"
+          max-file: "5"
+      healthcheck:
+        test: ["CMD-SHELL", "python manage.py check > /dev/null 2>&1"]
+        interval: 30s
+        timeout: 10s
+        retries: 5
 
-    services:
-      # Web application (Django)
-      web:
-        build:
-          context: .
-        command: gunicorn honeytrap.wsgi:application --bind 0.0.0.0:8000 --workers 3
-        ports:
-          - "8000:8000"
-        env_file:
-          - .env
-        environment:
-          # Use an env var to control whether source is mounted (dev) or image used (prod)
-          DJANGO_SETTINGS_MODULE: honeytrap.settings
-          PYTHONDONTWRITEBYTECODE: "1"
-          PYTHONUNBUFFERED: "1"
-        volumes:
-          - ./logs:/var/log/honey
-        restart: unless-stopped
-        secrets:
-          - django_secret
-        networks:
-          - telemetry
-          - honeynet
-        logging:
-          driver: "json-file"
-          options:
-            max-size: "50m"
-            max-file: "5"
-        healthcheck:
-          test: ["CMD-SHELL", "python manage.py check > /dev/null 2>&1"]
-          interval: 30s
-          timeout: 10s
-          retries: 5
+    log-server:
+      image: grafana/loki:3.2.0
+      profiles: ["observability"]
+      command: "-config.file=/etc/loki/local-config.yaml"
+      volumes:
+        - loki-data:/loki
+      networks:
+        - telemetry
 
-      # Loki (log storage)
-      log-server:
-        image: grafana/loki:3.2.0
-        profiles: ["observability"]
-        command: -config.file=/etc/loki/local-config.yaml
-        volumes:
-          - loki-data:/loki
-        networks:
-          - telemetry
+    grafana:
+      image: grafana/grafana:11.3.0
+      profiles: ["observability"]
+      ports:
+        - "3000:3000"
+      env_file:
+        - .env
+      environment:
+        GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+        GF_PATHS_DASHBOARDS: /var/lib/grafana/dashboards
+      volumes:
+        - ./observability/provisioning:/etc/grafana/provisioning:ro
+        - ./observability/dashboards:/var/lib/grafana/dashboards:ro
+        - grafana-data:/var/lib/grafana
+      restart: unless-stopped
+      networks:
+        - telemetry
 
-      # Grafana UI
-      grafana:
-        image: grafana/grafana:11.3.0
-        profiles: ["observability"]
-        ports:
-          - "3000:3000"
-        env_file:
-          - .env
-        environment:
-          GF_PATHS_PROVISIONING: /etc/grafana/provisioning
-          GF_PATHS_DASHBOARDS: /var/lib/grafana/dashboards
-        volumes:
-          - ./observability/provisioning:/etc/grafana/provisioning:ro
-          - ./observability/dashboards:/var/lib/grafana/dashboards:ro
-          - grafana-data:/var/lib/grafana
-        restart: unless-stopped
-        networks:
-          - telemetry
+    alertmanager:
+      image: prom/alertmanager:0.27.0
+      profiles: ["observability"]
+      ports:
+        - "9093:9093"
+      volumes:
+        - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+        - alertmanager-data:/var/lib/alertmanager
+      restart: unless-stopped
+      networks:
+        - telemetry
 
-      alertmanager:
-        image: prom/alertmanager:0.27.0
-        profiles: ["observability"]
-        ports:
-          - "9093:9093"
-        volumes:
-          - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-          - alertmanager-data:/var/lib/alertmanager
-        restart: unless-stopped
-        networks:
-          - telemetry
+    promtail:
+      image: grafana/promtail:3.2.0
+      profiles: ["observability"]
+      command: "-config.file=/etc/promtail/promtail.yaml"
+      volumes:
+        - ./observability/promtail.yaml:/etc/promtail/promtail.yaml:ro
+        - ./logs:/var/log/honey:ro
+      depends_on:
+        - log-server
+      restart: unless-stopped
+      networks:
+        - telemetry
 
-      # Promtail scrapes logs and forwards to Loki
-      promtail:
-        image: grafana/promtail:3.2.0
-        profiles: ["observability"]
-        command: -config.file=/etc/promtail/promtail.yaml
-        volumes:
-          - ./observability/promtail.yaml:/etc/promtail/promtail.yaml:ro
-          - ./logs:/var/log/honey:ro
-        depends_on:
-          - log-server
-        restart: unless-stopped
-        networks:
-          - telemetry
+    alert-worker:
+      build:
+        context: .
+      command: python manage.py dispatch_alerts --loop --interval 30
+      env_file:
+        - .env
+      environment:
+        DJANGO_SETTINGS_MODULE: honeytrap.settings
+        PYTHONDONTWRITEBYTECODE: "1"
+        PYTHONUNBUFFERED: "1"
+      volumes:
+        - .:/app
+        - ./logs:/var/log/honey
+      restart: unless-stopped
+      depends_on:
+        - web
+      networks:
+        - telemetry
 
-      # Background alert delivery worker
-      alert-worker:
-        build:
-          context: .
-        command: python manage.py dispatch_alerts --loop --interval 30
-        env_file:
-          - .env
-        environment:
-          DJANGO_SETTINGS_MODULE: honeytrap.settings
-          PYTHONDONTWRITEBYTECODE: "1"
-          PYTHONUNBUFFERED: "1"
-        volumes:
-          - ./logs:/var/log/honey
-        restart: unless-stopped
-        depends_on:
-          - web
-        networks:
-          - telemetry
+    log-forwarder:
+      build:
+        context: .
+      command: python scripts/forward_logs.py
+      restart: unless-stopped
+      env_file:
+        - .env
+      environment:
+        POLL_INTERVAL: "2"
+      volumes:
+        - ./logs:/var/log/honey:ro
+      depends_on:
+        - web
+      networks:
+        - telemetry
+        - honeynet
 
-      # Log forwarder (for containers that don't emit structured JSON)
-      log-forwarder:
-        build:
-          context: .
-        command: python scripts/forward_logs.py
-        restart: unless-stopped
-        env_file:
-          - .env
-        environment:
-          POLL_INTERVAL: "2"
-        volumes:
-          - ./logs:/var/log/honey:ro
-        depends_on:
-          - web
-        networks:
-          - telemetry
-          - honeynet
+    cowrie:
+      image: cowrie/cowrie:2.6.1
+      profiles: ["honeypots"]
+      networks:
+        - honeynet
+      volumes:
+        - cowrie-data:/cowrie
+      restart: unless-stopped
 
-      # Honeypots (isolated network)
-      cowrie:
-        image: cowrie/cowrie:2.6.1
-        profiles: ["honeypots"]
-        networks:
-          - honeynet
-        volumes:
-          - cowrie-data:/cowrie
-        restart: unless-stopped
+    dionaea:
+      image: ghcr.io/dionaea/dionaea:1.4.0
+      profiles: ["honeypots"]
+      networks:
+        - honeynet
+      volumes:
+        - dionaea-data:/var/lib/dionaea
+        - ./logs/dionaea:/var/log/dionaea
+      restart: unless-stopped
 
-      dionaea:
-        image: ghcr.io/dionaea/dionaea:1.4.0
-        profiles: ["honeypots"]
-        networks:
-          - honeynet
-        volumes:
-          - dionaea-data:/var/lib/dionaea
-        restart: unless-stopped
+    conpot:
+      image: ghcr.io/mushorg/conpot:0.6.0
+      profiles: ["honeypots"]
+      networks:
+        - honeynet
+      volumes:
+        - conpot-data:/var/log/conpot
+      restart: unless-stopped
 
-      conpot:
-        image: ghcr.io/mushorg/conpot:0.6.0
-        profiles: ["honeypots"]
-        networks:
-          - honeynet
-        volumes:
-          - conpot-data:/var/log/conpot
-        restart: unless-stopped
+    sandbox-worker:
+      build:
+        context: .
+      command: python manage.py sandbox_worker --loop --interval 60
+      restart: unless-stopped
+      profiles: ["observability"]
+      depends_on:
+        - web
+      env_file:
+        - .env
+      environment:
+        DJANGO_SETTINGS_MODULE: honeytrap.settings
+      volumes:
+        - ./logs:/var/log/honey
+      networks:
+        - telemetry
 
-      # Sandbox worker (simulated by default)
-      sandbox-worker:
-        build:
-          context: .
-        command: python manage.py sandbox_worker --loop --interval 60
-        restart: unless-stopped
-        profiles: ["observability"]
-        depends_on:
-          - web
-        env_file:
-          - .env
-        environment:
-          DJANGO_SETTINGS_MODULE: honeytrap.settings
-        volumes:
-          - ./logs:/var/log/honey
-        networks:
-          - telemetry
-
-      # Anomaly detector worker
-      anomaly-detect:
-        build:
-          context: .
-        command: python manage.py anomaly_detect --loop --interval 300
-        restart: unless-stopped
-        profiles: ["observability"]
-        depends_on:
-          - web
-        env_file:
-          - .env
-        volumes:
-          - ./logs:/var/log/honey
-        networks:
-          - telemetry
-
-    networks:
-      telemetry:
-        driver: bridge
-      honeynet:
-        driver: bridge
-        internal: true
-
-    volumes:
-      loki-data:
-      grafana-data:
-      alertmanager-data:
-      cowrie-data:
-      dionaea-data:
-      conpot-data:
-
-    secrets:
-      # Docker swarm / compose secrets (for production). For local testing you can
-      # create a file at infra/secrets/django_secret and reference it when running
-      # `docker secret create django_secret infra/secrets/django_secret`.
-      django_secret:
-        file: infra/secrets/django_secret
-    profiles: ["honeypots"]
-    networks:
-      - honeynet
-    volumes:
-      - ./logs/dionaea:/var/log/dionaea
-
-  conpot:
-    image: ghcr.io/mushorg/conpot:0.6.0
-    profiles: ["honeypots"]
-    networks:
-      - honeynet
-    volumes:
-      - ./logs/conpot:/var/log/conpot
+    anomaly-detect:
+      build:
+        context: .
+      command: python manage.py anomaly_detect --loop --interval 300
+      restart: unless-stopped
+      profiles: ["observability"]
+      depends_on:
+        - web
+      env_file:
+        - .env
+      volumes:
+        - ./logs:/var/log/honey
+      networks:
+        - telemetry
 
 networks:
   telemetry:
@@ -247,3 +185,18 @@ networks:
   honeynet:
     driver: bridge
     internal: true
+
+volumes:
+  loki-data:
+  grafana-data:
+  alertmanager-data:
+  cowrie-data:
+  dionaea-data:
+  conpot-data:
+
+secrets:
+  # Docker swarm / compose secrets (for production). For local testing you can
+  # create a file at infra/secrets/django_secret and reference it when running
+  # `docker secret create django_secret infra/secrets/django_secret`.
+  django_secret:
+    file: infra/secrets/django_secret

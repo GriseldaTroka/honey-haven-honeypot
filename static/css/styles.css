@@ -526,6 +526,11 @@ select:focus {
     }
 }
 
+.attack-flow-sankey {
+    min-height: 460px;
+    overflow-x: auto;
+}
+
 @keyframes bee-bob {
     0%,
     100% {

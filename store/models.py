@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -36,6 +37,7 @@ class HoneypotLog(models.Model):
     ]
 
     ip_address = models.GenericIPAddressField(null=True, blank=True)
+    session_id = models.CharField(max_length=80, blank=True, db_index=True)
     user_agent = models.TextField(blank=True)
     requested_url = models.TextField()
     method = models.CharField(max_length=10, default="GET")
@@ -51,6 +53,69 @@ class HoneypotLog(models.Model):
 
     class Meta:
         ordering = ["-timestamp"]
+
+
+class AttackerState(models.Model):
+    session_id = models.CharField(max_length=80, unique=True, db_index=True)
+    current_phase = models.CharField(max_length=40, default="noise_or_observation", db_index=True)
+    previous_phase = models.CharField(max_length=40, blank=True)
+    phase_confidence = models.FloatField(default=0.0)
+    risk_score = models.FloatField(default=0.0, db_index=True)
+    intent_score = models.FloatField(default=0.0)
+    last_event_type = models.CharField(max_length=80, blank=True)
+    last_observed_path = models.TextField(blank=True)
+    last_observed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    event_count = models.PositiveIntegerField(default=0)
+    suspicious_event_count = models.PositiveIntegerField(default=0)
+    alert_count = models.PositiveIntegerField(default=0)
+    unique_ips_count = models.PositiveIntegerField(default=0)
+    unique_user_agents_count = models.PositiveIntegerField(default=0)
+    primary_ip = models.GenericIPAddressField(null=True, blank=True, db_index=True)
+    primary_user_agent = models.TextField(blank=True)
+    geo_country = models.CharField(max_length=80, blank=True)
+    asn = models.CharField(max_length=80, blank=True)
+    campaign_id = models.CharField(max_length=120, blank=True, db_index=True)
+    last_signals = models.JSONField(default=list, blank=True)
+    state_snapshot = models.JSONField(default=dict, blank=True)
+    meta = models.JSONField(default=dict, blank=True)
+    first_seen_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        indexes = [
+            models.Index(fields=["current_phase"]),
+            models.Index(fields=["risk_score"]),
+            models.Index(fields=["updated_at"]),
+            models.Index(fields=["campaign_id"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.session_id} :: {self.current_phase} ({self.risk_score:.1f})"
+
+
+class StateTransition(models.Model):
+    attacker_state = models.ForeignKey(AttackerState, on_delete=models.CASCADE, related_name="transitions")
+    session_id = models.CharField(max_length=80, db_index=True)
+    from_phase = models.CharField(max_length=40, blank=True)
+    to_phase = models.CharField(max_length=40, db_index=True)
+    trigger_event_type = models.CharField(max_length=80)
+    trigger_path = models.TextField(blank=True)
+    trigger_reason = models.CharField(max_length=300, blank=True)
+    risk_delta = models.FloatField(default=0.0)
+    confidence_delta = models.FloatField(default=0.0)
+    event_reference = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["session_id", "created_at"]),
+            models.Index(fields=["to_phase"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.session_id}: {self.from_phase} -> {self.to_phase}"
 
 
 class AlertEvent(models.Model):
@@ -142,6 +207,9 @@ class AttackJourney(models.Model):
     escalation_attempts = models.JSONField(default=list, blank=True)
     tools_used = models.JSONField(default=list, blank=True)
     seconds_spent = models.IntegerField(default=0)
+    risk_score = models.FloatField(default=0.0)
+    confidence_score = models.FloatField(default=0.0)
+    intent_score = models.FloatField(default=0.0)
     first_seen = models.DateTimeField(null=True, blank=True)
     event_count = models.IntegerField(default=0, db_index=True)
     phases = models.JSONField(default=list, blank=True)
@@ -157,6 +225,139 @@ class AttackJourney(models.Model):
             models.Index(fields=["event_count"]),
             models.Index(fields=["campaign_id"]),
         ]
+
+
+class AnalystNote(models.Model):
+    session_id = models.CharField(max_length=80, blank=True, db_index=True)
+    campaign_id = models.CharField(max_length=120, blank=True, db_index=True)
+    alert_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    title = models.CharField(max_length=180)
+    body = models.TextField()
+    pinned = models.BooleanField(default=False, db_index=True)
+    tags = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)
+    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="analyst_notes")
+
+    class Meta:
+        ordering = ["-pinned", "-updated_at"]
+        indexes = [
+            models.Index(fields=["session_id"]),
+            models.Index(fields=["campaign_id"]),
+            models.Index(fields=["alert_id"]),
+        ]
+
+    def __str__(self) -> str:
+        return self.title
+
+
+class InvestigationBookmark(models.Model):
+    session_id = models.CharField(max_length=80, blank=True, db_index=True)
+    campaign_id = models.CharField(max_length=120, blank=True, db_index=True)
+    alert_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    ioc_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    label = models.CharField(max_length=180)
+    note = models.CharField(max_length=300, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="investigation_bookmarks")
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["user", "session_id", "campaign_id", "alert_id", "ioc_id", "label"], name="uniq_investigation_bookmark_user_scope"),
+        ]
+
+    def __str__(self) -> str:
+        return self.label
+
+
+class IOCIndicator(models.Model):
+    IOC_TYPES = [
+        ("ip", "IP Address"),
+        ("url", "URL"),
+        ("email", "Email"),
+        ("hash", "Hash"),
+    ]
+
+    session_id = models.CharField(max_length=80, blank=True, db_index=True)
+    source_model = models.CharField(max_length=80, blank=True, db_index=True)
+    source_object_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    ioc_type = models.CharField(max_length=20, choices=IOC_TYPES, db_index=True)
+    ioc_value = models.CharField(max_length=512, db_index=True)
+    confidence_score = models.FloatField(default=0.0)
+    source_event = models.CharField(max_length=80, blank=True, db_index=True)
+    evidence_summary = models.CharField(max_length=300, blank=True)
+    attack_phase = models.CharField(max_length=40, blank=True, db_index=True)
+    asg_risk_score = models.FloatField(null=True, blank=True)
+    asg_confidence = models.FloatField(null=True, blank=True)
+    attack_journey = models.ForeignKey(
+        AttackJourney,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="iocs",
+    )
+    first_seen = models.DateTimeField(auto_now_add=True, db_index=True)
+    last_seen = models.DateTimeField(auto_now=True, db_index=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-last_seen"]
+        constraints = [
+            models.UniqueConstraint(fields=["session_id", "ioc_type", "ioc_value", "source_event", "source_model", "source_object_id"], name="uniq_ioc_session_type_value_source"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.session_id or 'global'} :: {self.ioc_type} :: {self.ioc_value}"
+
+
+class DetectionAlert(models.Model):
+    SEVERITY_CHOICES = [
+        ("LOW", "Low"),
+        ("MEDIUM", "Medium"),
+        ("HIGH", "High"),
+        ("CRITICAL", "Critical"),
+    ]
+    STATUS_CHOICES = [
+        ("OPEN", "Open"),
+        ("INVESTIGATING", "Investigating"),
+        ("RESOLVED", "Resolved"),
+        ("FALSE_POSITIVE", "False Positive"),
+    ]
+
+    rule_name = models.CharField(max_length=120, db_index=True)
+    severity = models.CharField(max_length=20, choices=SEVERITY_CHOICES, db_index=True)
+    confidence_score = models.FloatField(default=0.0)
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default="OPEN", db_index=True)
+    description = models.CharField(max_length=500)
+    session_id = models.CharField(max_length=80, blank=True, db_index=True)
+    attack_journey = models.ForeignKey(AttackJourney, on_delete=models.SET_NULL, null=True, blank=True, related_name="detection_alerts")
+    campaign_id = models.CharField(max_length=120, blank=True, db_index=True)
+    evidence_source_model = models.CharField(max_length=80, blank=True, db_index=True)
+    evidence_source_object_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    evidence_source_event = models.CharField(max_length=80, blank=True, db_index=True)
+    evidence_fingerprint = models.CharField(max_length=200, blank=True, db_index=True)
+    evidence_summary = models.CharField(max_length=500, blank=True)
+    response_recommendation = models.JSONField(default=list, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)
+    resolved_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["rule_name", "session_id", "evidence_fingerprint"], name="uniq_detection_alert_rule_session_fingerprint"),
+        ]
+        indexes = [
+            models.Index(fields=["status"]),
+            models.Index(fields=["severity"]),
+            models.Index(fields=["campaign_id"]),
+            models.Index(fields=["created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.rule_name} :: {self.session_id or 'global'} :: {self.severity}"
 
 
 class PaymentRecord(models.Model):
@@ -200,6 +401,7 @@ class LoginAttempt(models.Model):
     username = models.CharField(max_length=150, blank=True)
     password_submitted = models.CharField(max_length=256, blank=True)
     ip_address = models.GenericIPAddressField(null=True, blank=True)
+    session_id = models.CharField(max_length=80, blank=True, db_index=True)
     user_agent = models.TextField(blank=True)
     requested_url = models.TextField(blank=True)
     success = models.BooleanField(default=False)

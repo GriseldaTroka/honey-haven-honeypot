@@ -1,6 +1,8 @@
 from django.contrib import admin
 
-from .models import AlertEvent, AttackJourney, BlogPost, CanaryToken, HoneypotLog, LoginAttempt, NoiseEvent, PaymentRecord, SupportTicket, TelemetryEvent, ThreatIntelSnapshot, UploadArtifact, Product
+from .models import AlertEvent, AttackJourney, AttackerState, DetectionAlert, IOCIndicator, StateTransition, BlogPost, CanaryToken, HoneypotLog, LoginAttempt, NoiseEvent, PaymentRecord, SupportTicket, TelemetryEvent, ThreatIntelSnapshot, UploadArtifact, Product
+from .investigation import get_campaign_summary
+from .detection import serialize_detection_alert
 
 
 @admin.register(Product)
@@ -30,6 +32,18 @@ class AlertEventAdmin(admin.ModelAdmin):
     @admin.action(description="Requeue selected alerts")
     def requeue_alerts(self, request, queryset):
         queryset.update(dispatch_status="pending", dispatched_at=None)
+
+
+@admin.register(DetectionAlert)
+class DetectionAlertAdmin(admin.ModelAdmin):
+    list_display = ("rule_name", "severity", "status", "session_id", "campaign_id", "confidence_score", "created_at", "resolved_at")
+    list_filter = ("severity", "status", "rule_name", "created_at", "resolved_at")
+    search_fields = ("rule_name", "session_id", "campaign_id", "description", "evidence_summary")
+    readonly_fields = ("created_at", "updated_at", "resolved_at", "response_recommendation", "metadata")
+
+    @admin.display(description="Alert payload")
+    def alert_payload(self, obj):
+        return serialize_detection_alert(obj, include_evidence=True)
 
 
 @admin.register(CanaryToken)
@@ -63,8 +77,63 @@ class ThreatIntelSnapshotAdmin(admin.ModelAdmin):
 
 @admin.register(AttackJourney)
 class AttackJourneyAdmin(admin.ModelAdmin):
-    list_display = ("session_id", "entry_point", "seconds_spent", "last_seen")
-    search_fields = ("session_id", "entry_point", "notes")
+    list_display = ("session_id", "campaign_id", "entry_point", "seconds_spent", "campaign_ioc_count", "campaign_unique_ioc_count", "last_seen")
+    list_filter = ("campaign_id", "last_seen")
+    search_fields = ("session_id", "campaign_id", "entry_point", "notes")
+    readonly_fields = ("campaign_ioc_count", "campaign_unique_ioc_count", "campaign_average_risk_score", "campaign_average_confidence_score")
+
+    @admin.display(description="Campaign IOC count")
+    def campaign_ioc_count(self, obj):
+        if not obj.campaign_id:
+            return 0
+        summary = get_campaign_summary(obj.campaign_id)
+        return summary["summary"]["ioc_count"] if summary else 0
+
+    @admin.display(description="Campaign unique IOC count")
+    def campaign_unique_ioc_count(self, obj):
+        if not obj.campaign_id:
+            return 0
+        summary = get_campaign_summary(obj.campaign_id)
+        return summary["summary"]["unique_ioc_count"] if summary else 0
+
+    @admin.display(description="Campaign average risk")
+    def campaign_average_risk_score(self, obj):
+        if not obj.campaign_id:
+            return 0
+        summary = get_campaign_summary(obj.campaign_id)
+        return summary["summary"]["average_risk_score"] if summary else 0
+
+    @admin.display(description="Campaign average confidence")
+    def campaign_average_confidence_score(self, obj):
+        if not obj.campaign_id:
+            return 0
+        summary = get_campaign_summary(obj.campaign_id)
+        return summary["summary"]["average_confidence_score"] if summary else 0
+
+
+@admin.register(IOCIndicator)
+class IOCIndicatorAdmin(admin.ModelAdmin):
+    list_display = ("session_id", "ioc_type", "ioc_value", "campaign_id", "confidence_score", "source_event", "last_seen")
+    list_filter = ("ioc_type", "source_event", "attack_journey__campaign_id", "last_seen")
+    search_fields = ("session_id", "ioc_value", "source_event", "attack_journey__campaign_id")
+
+    @admin.display(description="Campaign")
+    def campaign_id(self, obj):
+        return obj.attack_journey.campaign_id if obj.attack_journey else ""
+
+
+@admin.register(AttackerState)
+class AttackerStateAdmin(admin.ModelAdmin):
+    list_display = ("session_id", "current_phase", "risk_score", "phase_confidence", "event_count", "updated_at")
+    list_filter = ("current_phase", "updated_at")
+    search_fields = ("session_id", "primary_ip", "primary_user_agent", "campaign_id")
+
+
+@admin.register(StateTransition)
+class StateTransitionAdmin(admin.ModelAdmin):
+    list_display = ("session_id", "from_phase", "to_phase", "trigger_event_type", "created_at")
+    list_filter = ("from_phase", "to_phase", "created_at")
+    search_fields = ("session_id", "trigger_event_type", "trigger_path", "trigger_reason")
 
 
 @admin.register(PaymentRecord)

@@ -1,0 +1,88 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block content %}
+<section class="page-hero mb-4 reveal">
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+            <p class="small-caps mb-2">Security Surface</p>
+            <h1 class="section-title mb-1">{{ page_title }}</h1>
+            <p class="text-muted mb-0">Auto-refreshes when your staff session becomes active in this tab.</p>
+        </div>
+        <span id="staff-status-pill" class="badge text-bg-secondary">Checking access...</span>
+    </div>
+</section>
+
+<section class="auth-card auth-card-luxe p-4" data-staff-refresh-page="true" data-api-endpoint="{{ api_endpoint }}">
+    <div class="small text-muted mb-3" id="staff-refresh-meta">Waiting for first status check...</div>
+    <div class="row g-3 mb-4" id="api-docs-metrics">
+        <div class="col-6 col-lg-3">
+            <div class="metric-card metric-card-luxe h-100">
+                <h6>Version</h6>
+                <p id="api-docs-version">0.0</p>
+            </div>
+        </div>
+        <div class="col-6 col-lg-3">
+            <div class="metric-card metric-card-luxe h-100">
+                <h6>Routes</h6>
+                <p id="api-docs-routes">0</p>
+            </div>
+        </div>
+        <div class="col-6 col-lg-3">
+            <div class="metric-card metric-card-luxe h-100">
+                <h6>Methods</h6>
+                <p id="api-docs-methods">0</p>
+            </div>
+        </div>
+        <div class="col-6 col-lg-3">
+            <div class="metric-card metric-card-luxe h-100">
+                <h6>Scope</h6>
+                <p id="api-docs-scope">Public</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-4">
+        <div class="col-lg-6">
+            <div class="auth-card auth-card-luxe p-4 h-100">
+                <h5 class="mb-3">API Overview</h5>
+                <div class="d-flex flex-column gap-2">
+                    <div><span class="text-muted small d-block">Title</span><strong id="api-docs-title">Loading...</strong></div>
+                    <div><span class="text-muted small d-block">OpenAPI</span><span id="api-docs-openapi">Loading...</span></div>
+                    <div><span class="text-muted small d-block">Meta</span><span id="api-docs-meta">Loading...</span></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-6">
+            <div class="auth-card auth-card-luxe p-4 h-100">
+                <h5 class="mb-3">Available Paths</h5>
+                <div id="api-docs-path-list" class="list-group list-group-flush"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-4 mt-1">
+        <div class="col-lg-6">
+            <div class="auth-card auth-card-luxe p-4 h-100">
+                <h5 class="mb-3">Operations</h5>
+                <div id="api-docs-operation-list" class="list-group list-group-flush"></div>
+            </div>
+        </div>
+        <div class="col-lg-6">
+            <div class="auth-card auth-card-luxe p-4 h-100">
+                <h5 class="mb-3">Environment</h5>
+                <div id="api-docs-environment-list" class="list-group list-group-flush"></div>
+            </div>
+        </div>
+    </div>
+
+    <details class="mt-4">
+        <summary class="text-muted small">Raw JSON payload</summary>
+        <pre class="mt-3 mb-0" id="staff-protected-json">Loading...</pre>
+    </details>
+</section>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{% static 'js/staff_surface_refresh.js' %}"></script>
+{% endblock %}

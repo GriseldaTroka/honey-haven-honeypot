@@ -173,13 +173,14 @@ initBeeFlight();
 function initBehaviorTelemetry() {
     const body = document.body;
     const endpoint = body?.dataset?.telemetryEndpoint;
+    const honeySessionId = body?.dataset?.honeySessionId;
     if (!endpoint) {
         return;
     }
 
-    const storageKey = 'honey-telemetry-session';
-    const sessionId = window.localStorage.getItem(storageKey) || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    window.localStorage.setItem(storageKey, sessionId);
+    if (!honeySessionId) {
+        return;
+    }
 
     const pendingEvents = [];
     let lastMouseSample = 0;
@@ -189,7 +190,7 @@ function initBehaviorTelemetry() {
     function pushEvent(eventType, details) {
         pendingEvents.push({
             event_type: eventType,
-            session_id: sessionId,
+            session_id: honeySessionId,
             path: window.location.pathname,
             timestamp: new Date().toISOString(),
             details,
@@ -246,7 +247,7 @@ function initBehaviorTelemetry() {
 
         return {
             kind: 'fingerprint',
-            session_id: sessionId,
+            session_id: honeySessionId,
             screen: {
                 width: window.screen.width,
                 height: window.screen.height,
@@ -291,7 +292,7 @@ function initBehaviorTelemetry() {
         sendPayload({
             kind: 'behavior',
             event_type: reason === 'fingerprint' ? 'FINGERPRINT_SIGNAL' : 'BEHAVIOR_SIGNAL',
-            session_id: sessionId,
+            session_id: honeySessionId,
             events: batch,
             viewport: { width: window.innerWidth, height: window.innerHeight },
             url: window.location.href,

@@ -1,0 +1,85 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block content %}
+<section class="page-hero mb-4 reveal">
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+            <p class="small-caps mb-2">Security Surface</p>
+            <h1 class="section-title mb-1">{{ page_title }}</h1>
+            <p class="text-muted mb-0">Auto-refreshes when your staff session becomes active in this tab.</p>
+        </div>
+        <span id="staff-status-pill" class="badge text-bg-secondary">Checking access...</span>
+    </div>
+</section>
+
+<section class="auth-card auth-card-luxe p-4" data-staff-refresh-page="true" data-api-endpoint="{{ api_endpoint }}">
+    <div class="small text-muted mb-3" id="staff-refresh-meta">Waiting for first status check...</div>
+    <div class="row g-3 mb-4" id="staff-feed-metrics">
+        <div class="col-6 col-lg-3">
+            <div class="metric-card metric-card-luxe h-100">
+                <h6>Alerts</h6>
+                <p id="staff-metric-alerts">0</p>
+            </div>
+        </div>
+        <div class="col-6 col-lg-3">
+            <div class="metric-card metric-card-luxe h-100">
+                <h6>Telemetry</h6>
+                <p id="staff-metric-telemetry">0</p>
+            </div>
+        </div>
+        <div class="col-6 col-lg-3">
+            <div class="metric-card metric-card-luxe h-100">
+                <h6>Uploads</h6>
+                <p id="staff-metric-uploads">0</p>
+            </div>
+        </div>
+        <div class="col-6 col-lg-3">
+            <div class="metric-card metric-card-luxe h-100">
+                <h6>Payments</h6>
+                <p id="staff-metric-payments">0</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-4">
+        <div class="col-lg-6">
+            <div class="auth-card auth-card-luxe p-4 h-100">
+                <h5 class="mb-3">Recent Alerts</h5>
+                <div id="staff-alert-list" class="list-group list-group-flush"></div>
+            </div>
+        </div>
+        <div class="col-lg-6">
+            <div class="auth-card auth-card-luxe p-4 h-100">
+                <h5 class="mb-3">Telemetry Stream</h5>
+                <div id="staff-telemetry-list" class="list-group list-group-flush"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-4 mt-1">
+        <div class="col-lg-6">
+            <div class="auth-card auth-card-luxe p-4 h-100">
+                <h5 class="mb-3">Quarantined Uploads</h5>
+                <div id="staff-upload-list" class="list-group list-group-flush"></div>
+            </div>
+        </div>
+        <div class="col-lg-6">
+            <div class="auth-card auth-card-luxe p-4 h-100">
+                <h5 class="mb-3">Payments & Tickets</h5>
+                <div id="staff-payment-list" class="list-group list-group-flush mb-3"></div>
+                <div id="staff-ticket-list" class="list-group list-group-flush"></div>
+            </div>
+        </div>
+    </div>
+
+    <details class="mt-4">
+        <summary class="text-muted small">Raw JSON payload</summary>
+        <pre class="mt-3 mb-0" id="staff-protected-json">Loading...</pre>
+    </details>
+</section>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{% static 'js/staff_surface_refresh.js' %}"></script>
+{% endblock %}

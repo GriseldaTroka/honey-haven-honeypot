@@ -7,8 +7,16 @@
             <p class="small-caps mb-2">Members Access</p>
             <h1 class="h3 mb-3">Welcome Back</h1>
             <p class="text-muted mb-4">Sign in to continue shopping your favorite honey blends.</p>
+            {% if csrf_expired %}
+                <div class="alert alert-warning" role="alert">
+                    Your login page has expired. Reloading...
+                </div>
+            {% endif %}
             <form method="post" class="vstack gap-3">
                 {% csrf_token %}
+                {% if next %}
+                    <input type="hidden" name="next" value="{{ next }}">
+                {% endif %}
                 <div>
                     <label class="form-label">Username</label>
                     <input type="text" name="username" class="form-control" required>
@@ -23,4 +31,11 @@
         </div>
     </div>
 </section>
+{% if csrf_expired %}
+<script>
+    window.setTimeout(() => {
+        window.location.href = "{% url 'login' %}";
+    }, 1200);
+</script>
+{% endif %}
 {% endblock %}

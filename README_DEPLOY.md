@@ -65,7 +65,7 @@ User=www-data
 Group=www-data
 EnvironmentFile=/etc/honey/honey.env
 WorkingDirectory=/opt/honey
-ExecStart=/opt/honey/venv/bin/gunicorn honeytrap.wsgi:application -w 3 -b 127.0.0.1:8000
+ExecStart=/opt/honey/venv/bin/gunicorn honeytrap.wsgi:application -w 1 -b 127.0.0.1:8000
 Restart=on-failure
 RestartSec=5s
 

@@ -214,6 +214,45 @@
 </section>
 
 <section class="row g-4 mt-1">
+    <div class="col-12 reveal">
+        <div class="auth-card auth-card-luxe p-4">
+            <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+                <h5 class="mb-0">Attacker State Graph</h5>
+                <span class="badge text-bg-dark">Session-level risk and phase tracking</span>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-hover align-middle table-luxe">
+                    <thead>
+                        <tr>
+                            <th>Session</th>
+                            <th>Phase</th>
+                            <th>Risk</th>
+                            <th>Confidence</th>
+                            <th>Events</th>
+                            <th>Next Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in attacker_states %}
+                            <tr>
+                                <td>{{ item.session_id }}</td>
+                                <td>{{ item.current_phase }}</td>
+                                <td>{{ item.risk_score|floatformat:1 }}</td>
+                                <td>{{ item.phase_confidence|floatformat:2 }}</td>
+                                <td>{{ item.event_count }}</td>
+                                <td class="text-muted small">{{ item.likely_next_action }}</td>
+                            </tr>
+                        {% empty %}
+                            <tr><td colspan="6" class="text-muted">No attacker state graph data yet.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="row g-4 mt-1">
     <div class="col-lg-6 reveal">
         <div class="auth-card auth-card-luxe p-4 h-100">
             <h5 class="mb-3">Support Tickets</h5>

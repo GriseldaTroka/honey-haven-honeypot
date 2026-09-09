@@ -17,8 +17,8 @@ from . import fake_registry
 from .utils import SQLI_PATTERN, PROBING_PATH_PATTERN, COMMAND_PATTERN, SCANNER_PATTERN
 from django.conf import settings
 
-from .models import AlertEvent, AttackJourney, NoiseEvent, PaymentRecord, SupportTicket, TelemetryEvent, ThreatIntelSnapshot, UploadArtifact
-from .utils import derive_session_id, emit_structured_event, get_client_ip, log_event, request_payload_to_text
+from .models import AlertEvent, AttackJourney, AttackerState, IOCIndicator, NoiseEvent, PaymentRecord, SupportTicket, TelemetryEvent, ThreatIntelSnapshot, UploadArtifact, HoneypotLog, LoginAttempt
+from .utils import derive_session_id, emit_structured_event, get_client_ip, get_or_create_honey_session_id, log_event, request_payload_to_text
 
 EVENT_LOGGER = logging.getLogger("honeytrap.events")
 
@@ -280,13 +280,7 @@ def build_fake_runtime_profile(request: HttpRequest, surface: str) -> dict[str, 
     so that live feed / API docs / research report share the same backend, cluster,
     and persona for a given visitor session.
     """
-    identity = derive_session_id(
-        ip_address=get_client_ip(request),
-        user_agent=request.META.get("HTTP_USER_AGENT", "")[:1000],
-        accept_language=request.META.get("HTTP_ACCEPT_LANGUAGE", "")[:200],
-        cookie_seed=request.COOKIES.get("sessionid", "")[:80],
-        path="",
-    )
+    identity = get_or_create_honey_session_id(request)
 
     cached = getattr(request, "_honeytrap_runtime_profile", None)
     if isinstance(cached, dict) and cached.get("identity") == identity:
@@ -318,7 +312,7 @@ def build_fake_runtime_profile(request: HttpRequest, surface: str) -> dict[str, 
         "surface": surface,
         "org_name": FAKE_ORG_PROFILE["name"],
         "region": FAKE_ORG_PROFILE["region"],
-        "public_session": _PUBLIC_DECOY_SESSION,
+        "public_session": identity,
     }
     setattr(request, "_honeytrap_runtime_profile", profile)
     return profile
@@ -408,18 +402,45 @@ def log_decoy_access(
     username: str = "",
     status_code: int = 200,
     suspicion_reason: str = "Decoy surface interaction",
+    endpoint: str = "",
+    request_body: str = "",
+    suspicious_keywords: list[str] | None = None,
+    severity: str = "medium",
 ) -> None:
+    api_endpoint = endpoint or ""
+    if not api_endpoint and request.path.startswith("/api/"):
+        api_endpoint = request.path
+    keyword_list = [keyword for keyword in (suspicious_keywords or []) if keyword]
     emit_structured_event(
         "decoy_access",
         event_type=event_type,
         ip_address=get_client_ip(request),
         user_agent=request.META.get("HTTP_USER_AGENT", "")[:1000],
         requested_url=request.get_full_path()[:1000],
+        endpoint=api_endpoint,
+        method=request.method,
         payload=payload[:4000],
+        request_body=request_body[:4000],
         username=username[:150],
         status_code=status_code,
         suspicion_reason=suspicion_reason,
+        severity=severity,
+        suspicious_keywords=keyword_list,
     )
+    if api_endpoint:
+        emit_structured_event(
+            "api_probe",
+            event_type="api_probe",
+            endpoint=api_endpoint,
+            method=request.method,
+            ip_address=get_client_ip(request),
+            user_agent=request.META.get("HTTP_USER_AGENT", "")[:1000],
+            request_body=request_body[:4000],
+            response_status=status_code,
+            severity=severity,
+            suspicious_keywords=keyword_list,
+            suspicion_reason=suspicion_reason,
+        )
     log_event(
         request,
         event_type=event_type,
@@ -522,11 +543,23 @@ def fake_panel_response(request: HttpRequest, panel_key: str) -> HttpResponse:
     return decoy_headers(response, panel_key, profile)
 
 
-def fake_json_response(request: HttpRequest, payload: dict[str, Any], *, label: str, status_code: int = 200) -> JsonResponse:
+def fake_json_response(
+    request: HttpRequest,
+    payload: dict[str, Any],
+    *,
+    label: str,
+    status_code: int = 200,
+    endpoint: str = "",
+    request_body: str = "",
+    suspicious_keywords: list[str] | None = None,
+    severity: str = "medium",
+    suspicion_reason: str = "Decoy surface interaction",
+    allow_error_injection: bool = True,
+) -> JsonResponse:
     profile = build_fake_runtime_profile(request, f"json:{label}")
     _apply_decoy_timing(profile)
     # probabilistically inject transient errors for non-staff surfaces
-    err = _maybe_inject_error(profile, label)
+    err = _maybe_inject_error(profile, label) if allow_error_injection else None
     if err is not None:
         response = JsonResponse({"error": err.get("message", "Upstream error")}, status=err["status"])
     else:
@@ -534,9 +567,13 @@ def fake_json_response(request: HttpRequest, payload: dict[str, Any], *, label: 
     log_decoy_access(
         request,
         event_type="API_HIT",
-        payload=request_payload_to_text(request),
+        payload=request_body or request_payload_to_text(request),
         status_code=status_code,
-        suspicion_reason=f"Accessed decoy API: {label}",
+        suspicion_reason=suspicion_reason,
+        endpoint=endpoint or (f"/{label}" if label.startswith("api/") else ""),
+        request_body=request_body or request_payload_to_text(request),
+        suspicious_keywords=suspicious_keywords,
+        severity=severity,
     )
     return decoy_headers(response, label, profile)
 
@@ -649,12 +686,7 @@ def deliver_alert_payload(
 def enqueue_alert_event(request: HttpRequest, *, alert_type: str, detail: str, channels: dict[str, str]) -> AlertEvent:
     # deduplication / rate-limiting: avoid creating many identical alerts in short window
     ip = get_client_ip(request)
-    session_id = derive_session_id(
-        ip_address=ip or "",
-        user_agent=request.META.get("HTTP_USER_AGENT", "")[:1000],
-        accept_language=request.META.get("HTTP_ACCEPT_LANGUAGE", "")[:200],
-        cookie_seed=request.COOKIES.get("sessionid", "")[:80],
-    )
+    session_id = get_or_create_honey_session_id(request)
     # Prefer centralized settings values (set in `honeytrap/settings.py`) so the
     # whole application uses a single source of truth. These are configurable
     # via environment variables described in settings.py.
@@ -714,6 +746,19 @@ def enqueue_alert_event(request: HttpRequest, *, alert_type: str, detail: str, c
         metadata={**channels, "session_id": session_id},
         dispatch_status="pending",
     )
+    try:
+        persist_fake_iocs(
+            session_id=session_id,
+            source_event="AlertEvent",
+            source_model="AlertEvent",
+            source_object_id=event.id,
+            text=" ".join([detail, request.get_full_path(), request.META.get("HTTP_USER_AGENT", "")]),
+            related_journey=AttackJourney.objects.filter(session_id=session_id).first(),
+            metadata={"alert_type": alert_type},
+            evidence_summary=f"Alert {alert_type}: {detail[:120]}",
+        )
+    except Exception:
+        pass
     emit_structured_event(
         "alert_queue",
         alert_type=alert_type,
@@ -757,7 +802,7 @@ def fake_geoip_profile(ip_address: str) -> dict[str, Any]:
     return profile
 
 
-def upload_trap_report(filename: str, payload: bytes, uploader_ip: str, user_agent: str) -> dict[str, Any]:
+def upload_trap_report(filename: str, payload: bytes, uploader_ip: str, user_agent: str, *, session_id: str = "") -> dict[str, Any]:
     digest = hashlib.sha256(payload).hexdigest()
     byte_counts = [payload.count(byte) for byte in set(payload)] or [1]
     entropy = 0.0
@@ -774,15 +819,40 @@ def upload_trap_report(filename: str, payload: bytes, uploader_ip: str, user_age
     elif filename.lower().endswith((".php", ".phtml", ".aspx", ".jsp")):
         verdict = "suspicious-upload"
 
-    UploadArtifact.objects.create(
+    artifact = UploadArtifact.objects.create(
         filename=filename[:255],
         sha256=digest,
         entropy=round(entropy, 4),
         verdict=verdict,
         uploader_ip=uploader_ip,
         user_agent=user_agent[:1000],
-        metadata={"size": len(payload)},
+        metadata={"size": len(payload), "session_id": session_id},
     )
+    try:
+        persist_fake_iocs(
+            session_id=session_id,
+            source_event="UploadArtifact",
+            source_model="UploadArtifact",
+            source_object_id=artifact.id,
+            text=" ".join([filename, lowered, digest, user_agent]),
+            related_journey=AttackJourney.objects.filter(session_id=session_id).first(),
+            metadata={"verdict": verdict, "entropy": round(entropy, 4)},
+            evidence_summary=f"UploadArtifact {filename} flagged {verdict}",
+        )
+        from .detection import run_detection_pipeline
+
+        run_detection_pipeline(
+            session_id,
+            trigger={
+                "source_model": "UploadArtifact",
+                "source_object_id": artifact.id,
+                "source_event": "UploadArtifact",
+                "ip_address": uploader_ip,
+                "payload": filename,
+            },
+        )
+    except Exception:
+        pass
     emit_structured_event(
         "upload_trap",
         filename=filename,
@@ -792,11 +862,12 @@ def upload_trap_report(filename: str, payload: bytes, uploader_ip: str, user_age
         uploader_ip=uploader_ip,
         user_agent=user_agent[:1000],
         size=len(payload),
+        session_id=session_id,
     )
     return {"filename": filename, "sha256": digest, "entropy": round(entropy, 4), "verdict": verdict}
 
 
-def fake_payment_payload(reference: str | None = None) -> dict[str, Any]:
+def fake_payment_payload(reference: str | None = None, *, session_id: str = "") -> dict[str, Any]:
     # Use centralized fake registry to ensure consistency across surfaces
     if reference:
         order_ref = reference
@@ -817,20 +888,69 @@ def fake_payment_payload(reference: str | None = None) -> dict[str, Any]:
         "amount": order["amount"],
         "currency": payment.get("currency", "USD"),
         "status": payment.get("status", "pending"),
-        "metadata": {"stripe_account": "acct_fake_honeyhaven", "customer": persona.get("username") if persona else None},
+        "metadata": {"stripe_account": "acct_fake_honeyhaven", "customer": persona.get("username") if persona else None, "session_id": session_id},
     }
-    PaymentRecord.objects.create(**record)
+    payment_record = PaymentRecord.objects.create(**record)
+    try:
+        persist_fake_iocs(
+            session_id=session_id,
+            source_event="PaymentRecord",
+            source_model="PaymentRecord",
+            source_object_id=payment_record.id,
+            text=" ".join([record["payment_id"], record["merchant_reference"], record["card_last4"], record["status"], json.dumps(record.get("metadata", {}), default=str)]),
+            related_journey=AttackJourney.objects.filter(session_id=session_id).first(),
+            metadata={"currency": record["currency"], "amount": str(record["amount"])},
+            evidence_summary=f"PaymentRecord {record['payment_id']} status {record['status']}",
+        )
+        from .detection import run_detection_pipeline
+
+        run_detection_pipeline(
+            session_id,
+            trigger={
+                "source_model": "PaymentRecord",
+                "source_object_id": payment_record.id,
+                "source_event": "PaymentRecord",
+                "payload": json.dumps(record, default=str),
+            },
+        )
+    except Exception:
+        pass
     emit_structured_event("payment_record", **record)
     return record
 
 
-def fake_support_ticket(subject: str, body: str, email: str = "") -> dict[str, Any]:
+def fake_support_ticket(subject: str, body: str, email: str = "", *, session_id: str = "") -> dict[str, Any]:
     ticket = fake_registry.ticket_for_subject(subject, email)
     # attach body and metadata
     ticket["body"] = body
     ticket.setdefault("metadata", {})
     ticket["metadata"]["channel"] = ticket["metadata"].get("channel", "portal")
-    SupportTicket.objects.create(**{k: v for k, v in ticket.items() if k in ["ticket_id", "requester_email", "subject", "status", "priority", "body"]})
+    ticket["metadata"]["session_id"] = session_id
+    support_ticket = SupportTicket.objects.create(**{k: v for k, v in ticket.items() if k in ["ticket_id", "requester_email", "subject", "status", "priority", "body", "metadata"]})
+    try:
+        persist_fake_iocs(
+            session_id=session_id,
+            source_event="SupportTicket",
+            source_model="SupportTicket",
+            source_object_id=support_ticket.id,
+            text=" ".join([ticket["ticket_id"], ticket.get("requester_email", ""), subject, body, json.dumps(ticket.get("metadata", {}), default=str)]),
+            related_journey=AttackJourney.objects.filter(session_id=session_id).first(),
+            metadata={"priority": ticket.get("priority", "normal"), "status": ticket.get("status", "open")},
+            evidence_summary=f"SupportTicket {ticket['ticket_id']} subject {subject[:120]}",
+        )
+        from .detection import run_detection_pipeline
+
+        run_detection_pipeline(
+            session_id,
+            trigger={
+                "source_model": "SupportTicket",
+                "source_object_id": support_ticket.id,
+                "source_event": "SupportTicket",
+                "payload": json.dumps(ticket, default=str),
+            },
+        )
+    except Exception:
+        pass
     emit_structured_event("support_ticket", **ticket)
     return ticket
 
@@ -853,6 +973,32 @@ def record_telemetry_event(session_id: str, event_type: str, path: str, details:
         user_agent=request.META.get("HTTP_USER_AGENT", "")[:1000],
         details=details,
     )
+    try:
+        persist_fake_iocs(
+            session_id=session_id,
+            source_event="TelemetryEvent",
+            source_model="TelemetryEvent",
+            source_object_id=event.id,
+            text=" ".join([path, json.dumps(details, default=str), request.META.get("HTTP_USER_AGENT", "")]),
+            related_journey=AttackJourney.objects.filter(session_id=session_id[:80]).first(),
+            metadata={"event_type": event_type},
+            evidence_summary=f"Telemetry event {event_type} on {path[:120]}",
+        )
+        from .detection import run_detection_pipeline
+
+        run_detection_pipeline(
+            session_id,
+            trigger={
+                "source_model": "TelemetryEvent",
+                "source_object_id": event.id,
+                "source_event": event_type,
+                "ip_address": get_client_ip(request),
+                "request_path": path,
+                "payload": json.dumps(details, default=str),
+            },
+        )
+    except Exception:
+        pass
     return event
 
 
@@ -866,30 +1012,65 @@ def upsert_attack_journey(session_id: str, **fields: Any) -> AttackJourney:
 
     # Recompute summary metrics from stored event tables to keep persisted journey consistent
     try:
-        cutoff = timezone.now() - timezone.timedelta(days=30)
-        # count related events by deriving session matching logic
-        logs_qs = HoneypotLog.objects.filter(requested_url__isnull=False)
-        # match by session-derived fingerprint: we approximate by matching on session_id via derived value
-        # For correctness, we recompute derive_session_id per log entry and match to provided session_id
-        related_logs = [l for l in HoneypotLog.objects.all() if derive_session_id(ip_address=l.ip_address or "", user_agent=l.user_agent or "", accept_language="", cookie_seed="", path=l.requested_url)[:80] == session_id[:80]]
-        related_teles = [t for t in TelemetryEvent.objects.all() if (t.session_id or derive_session_id(ip_address=t.ip_address or "", user_agent=t.user_agent or "", accept_language="", cookie_seed="", path=t.path))[:80] == session_id[:80]]
-        related_logins = [li for li in LoginAttempt.objects.all() if derive_session_id(ip_address=li.ip_address or "", user_agent=li.user_agent or "", accept_language="", cookie_seed="", path=li.requested_url)[:80] == session_id[:80]]
-        related_alerts = [a for a in AlertEvent.objects.all() if derive_session_id(ip_address=a.ip_address or "", user_agent=a.user_agent or "", accept_language="", cookie_seed="", path=a.requested_url)[:80] == session_id[:80]]
+        related_logs = HoneypotLog.objects.filter(session_id=session_id[:80])
+
+        related_teles = TelemetryEvent.objects.filter(
+            session_id=session_id[:80]
+        ) | TelemetryEvent.objects.filter(
+            details__session_id=session_id[:80]
+        )
+
+        related_logins = LoginAttempt.objects.filter(session_id=session_id[:80])
+        related_alerts = AlertEvent.objects.filter(metadata__session_id=session_id[:80])
+        related_uploads = UploadArtifact.objects.filter(metadata__session_id=session_id[:80])
+        related_payments = PaymentRecord.objects.filter(metadata__session_id=session_id[:80])
+        related_tickets = SupportTicket.objects.filter(metadata__session_id=session_id[:80])
 
         all_events = []
-        all_events.extend([{"ts": l.timestamp, "kind": "request", "detail": l.requested_url, "attack_class": l.attack_classification, "ip": l.ip_address, "ua": l.user_agent} for l in related_logs])
-        all_events.extend([{"ts": t.timestamp, "kind": "telemetry", "detail": t.path, "attack_class": "telemetry", "ip": t.ip_address, "ua": t.user_agent} for t in related_teles])
-        all_events.extend([{"ts": li.timestamp, "kind": "login", "detail": li.requested_url, "attack_class": ("brute_force" if not li.success else "login"), "ip": li.ip_address, "ua": li.user_agent} for li in related_logins])
-        all_events.extend([{"ts": a.timestamp, "kind": "alert", "detail": a.detail, "attack_class": a.alert_type, "ip": a.ip_address, "ua": a.user_agent} for a in related_alerts])
+        all_events.extend([{"ts": l.timestamp, "kind": "request", "source": "HoneypotLog", "source_object_id": l.id, "detail": l.requested_url, "attack_class": l.attack_classification, "ip": l.ip_address, "ua": l.user_agent, "payload": l.payload[:400]} for l in related_logs])
+        all_events.extend([{"ts": t.timestamp, "kind": "telemetry", "source": "TelemetryEvent", "source_object_id": t.id, "detail": t.path, "attack_class": "telemetry", "ip": t.ip_address, "ua": t.user_agent, "payload": json.dumps(t.details, default=str) if t.details else ""} for t in related_teles])
+        all_events.extend([{"ts": li.timestamp, "kind": "login", "source": "LoginAttempt", "source_object_id": li.id, "detail": li.requested_url, "attack_class": ("brute_force" if not li.success else "login"), "ip": li.ip_address, "ua": li.user_agent, "payload": li.password_submitted[:400]} for li in related_logins])
+        all_events.extend([{"ts": a.timestamp, "kind": "alert", "source": "AlertEvent", "source_object_id": a.id, "detail": a.detail, "attack_class": a.alert_type, "ip": a.ip_address, "ua": a.user_agent, "payload": json.dumps({"detail": a.detail, "requested_url": a.requested_url, "metadata": a.metadata}, default=str)[:400]} for a in related_alerts])
+        all_events.extend([{"ts": u.timestamp, "kind": "upload", "source": "UploadArtifact", "source_object_id": u.id, "detail": u.filename, "attack_class": u.verdict, "ip": u.uploader_ip, "ua": u.user_agent, "payload": json.dumps({"filename": u.filename, "sha256": u.sha256, "entropy": u.entropy, "metadata": u.metadata}, default=str)[:400]} for u in related_uploads])
+        all_events.extend([{"ts": p.timestamp, "kind": "payment", "source": "PaymentRecord", "source_object_id": p.id, "detail": p.payment_id, "attack_class": p.status, "ip": p.metadata.get("ip_address") if isinstance(p.metadata, dict) else None, "ua": p.metadata.get("user_agent", "") if isinstance(p.metadata, dict) else "", "payload": json.dumps({"merchant_reference": p.merchant_reference, "card_last4": p.card_last4, "metadata": p.metadata}, default=str)[:400]} for p in related_payments])
+        all_events.extend([{"ts": s.timestamp, "kind": "support", "source": "SupportTicket", "source_object_id": s.id, "detail": s.ticket_id, "attack_class": s.status, "ip": s.metadata.get("ip_address") if isinstance(s.metadata, dict) else None, "ua": s.metadata.get("user_agent", "") if isinstance(s.metadata, dict) else "", "payload": json.dumps({"requester_email": s.requester_email, "subject": s.subject, "body": s.body, "metadata": s.metadata}, default=str)[:400]} for s in related_tickets])
+
+        for event in all_events:
+            source_text = " ".join(
+                [
+                    str(event.get("detail", "")),
+                    str(event.get("payload", "")),
+                    str(event.get("ua", "")),
+                    str(event.get("attack_class", "")),
+                ]
+            )
+            persist_fake_iocs(
+                session_id=session_id,
+                source_event=str(event.get("source", "")),
+                source_model=str(event.get("source", "")),
+                source_object_id=event.get("source_object_id"),
+                text=source_text,
+                related_journey=journey,
+                metadata={"kind": event.get("kind", ""), "attack_class": event.get("attack_class", "")},
+            )
 
         if all_events:
             all_events.sort(key=lambda x: x["ts"])
             first_seen = all_events[0]["ts"]
             last_seen = all_events[-1]["ts"]
-            seconds_spent = int((last_seen - first_seen).total_seconds())
+            seconds_spent = min(
+               int((last_seen - first_seen).total_seconds()),
+                   86400
+                )
             ips = list({e["ip"] for e in all_events if e.get("ip")})
             uas = list({(e.get("ua") or "")[:200] for e in all_events if e.get("ua")})
-            phases = _detect_phases(all_events)
+            phases = _sequence_detect_phases(all_events)
+            tools_used = _journey_tools_used(all_events)
+            escalation_attempts = _journey_escalation_attempts(all_events)
+            risk_score, confidence_score, intent_score = _journey_scores(phases, escalation_attempts, tools_used, len(all_events))
+            event_records = _journey_event_records(all_events)
+            journey.recon_path = event_records
+            journey.payload_evolution = event_records
             journey.first_seen = journey.first_seen or first_seen
             journey.last_seen = last_seen
             journey.seconds_spent = seconds_spent
@@ -897,11 +1078,29 @@ def upsert_attack_journey(session_id: str, **fields: Any) -> AttackJourney:
             journey.ips = ips
             journey.user_agents = uas
             journey.phases = phases
-    except Exception:
-        # If any error occurs while aggregating, save whatever fields were provided
-        pass
+            journey.tools_used = tools_used
+            journey.escalation_attempts = escalation_attempts
+            journey.risk_score = risk_score
+            journey.confidence_score = confidence_score
+            journey.intent_score = intent_score
+            journey.campaign_id = _journey_campaign_id(phases, tools_used, escalation_attempts)
+    except Exception as e:
+        print("AttackJourney aggregation error:", e)
 
     journey.save()
+    try:
+        from .detection import run_detection_pipeline
+
+        run_detection_pipeline(
+            session_id,
+            trigger={
+                "source_model": "AttackJourney",
+                "source_object_id": journey.id,
+                "source_event": "AttackJourney",
+            },
+        )
+    except Exception:
+        pass
     return journey
 
 
@@ -939,6 +1138,338 @@ def extract_fake_iocs(text: str) -> dict[str, list[str]]:
     return {"ips": ips[:10], "urls": urls[:10], "emails": emails[:10], "hashes": hashes[:10]}
 
 
+def _ioc_confidence(ioc_type: str, source_event: str) -> float:
+    base = {
+        "ip": 0.72,
+        "url": 0.82,
+        "email": 0.88,
+        "hash": 0.94,
+    }.get(ioc_type, 0.75)
+    if source_event in {"UploadArtifact", "PaymentRecord", "SupportTicket"}:
+        base += 0.03
+    if source_event == "IOCExtractionView":
+        base -= 0.02
+    return round(min(0.99, max(0.1, base)), 2)
+
+
+def _ioc_attack_context(session_id: str, related_journey: AttackJourney | None) -> tuple[str, float | None, float | None]:
+    attack_phase = ""
+    asg_risk_score: float | None = None
+    asg_confidence: float | None = None
+
+    if related_journey:
+        phases = related_journey.phases or []
+        if phases and isinstance(phases[0], dict):
+            attack_phase = str(phases[0].get("phase", ""))
+        elif phases:
+            attack_phase = str(phases[0])
+
+        asg_risk_score = related_journey.risk_score
+        asg_confidence = related_journey.confidence_score
+
+    if not attack_phase:
+        state = AttackerState.objects.filter(session_id=session_id[:80]).first() if session_id else None
+        if state:
+            attack_phase = state.current_phase or ""
+            asg_risk_score = state.risk_score
+            asg_confidence = state.phase_confidence
+
+    return attack_phase, asg_risk_score, asg_confidence
+
+
+def persist_fake_iocs(
+    *,
+    session_id: str,
+    source_event: str,
+    source_model: str = "",
+    source_object_id: int | None = None,
+    text: str,
+    related_journey: AttackJourney | None = None,
+    metadata: dict[str, Any] | None = None,
+    evidence_summary: str = "",
+) -> list[IOCIndicator]:
+    extracted = extract_fake_iocs(text or "")
+    # Avoid treating the session id itself as an IOC hash
+    if session_id:
+        hashes = extracted.get("hashes", [])
+        extracted["hashes"] = [h for h in hashes if h != session_id]
+
+    if not any(extracted.values()):
+        return []
+
+    ioc_type_map = {
+        "ips": "ip",
+        "urls": "url",
+        "emails": "email",
+        "hashes": "hash",
+    }
+
+    session_id = str(session_id or "")[:80]
+    source_event = str(source_event or "")[:80]
+    source_model = str(source_model or "")[:80]
+    related_journey = related_journey or (AttackJourney.objects.filter(session_id=session_id).first() if session_id else None)
+    attack_phase, asg_risk_score, asg_confidence = _ioc_attack_context(session_id, related_journey)
+    now = timezone.now()
+    persisted: list[IOCIndicator] = []
+
+    for extracted_type, values in extracted.items():
+        ioc_type = ioc_type_map.get(extracted_type, extracted_type)
+        for value in values:
+            value = str(value)[:512]
+            confidence = _ioc_confidence(ioc_type, source_event)
+            defaults = {
+                "confidence_score": confidence,
+                "attack_journey": related_journey,
+                "source_model": source_model,
+                "source_object_id": source_object_id,
+                "evidence_summary": evidence_summary[:300],
+                "attack_phase": attack_phase,
+                "asg_risk_score": asg_risk_score,
+                "asg_confidence": asg_confidence,
+                "metadata": {
+                    **(metadata or {}),
+                    "discovered_from": [source_event] if source_event else [],
+                },
+            }
+            indicator, created = IOCIndicator.objects.get_or_create(
+                session_id=session_id,
+                ioc_type=ioc_type,
+                ioc_value=value,
+                source_event=source_event,
+                source_model=source_model,
+                source_object_id=source_object_id,
+                defaults=defaults,
+            )
+            if not created:
+                merged_meta = dict(indicator.metadata or {})
+                discovered_from = list(dict.fromkeys([*(merged_meta.get("discovered_from", []) or []), source_event]))
+                merged_meta.update(metadata or {})
+                merged_meta["discovered_from"] = discovered_from
+                indicator.confidence_score = max(indicator.confidence_score, confidence)
+                indicator.attack_journey = indicator.attack_journey or related_journey
+                indicator.source_model = indicator.source_model or source_model
+                indicator.source_object_id = indicator.source_object_id or source_object_id
+                indicator.evidence_summary = indicator.evidence_summary or evidence_summary[:300]
+                indicator.attack_phase = indicator.attack_phase or attack_phase
+                indicator.asg_risk_score = indicator.asg_risk_score if indicator.asg_risk_score is not None else asg_risk_score
+                indicator.asg_confidence = indicator.asg_confidence if indicator.asg_confidence is not None else asg_confidence
+                indicator.metadata = merged_meta
+                indicator.last_seen = now
+                indicator.save(update_fields=["confidence_score", "attack_journey", "source_model", "source_object_id", "evidence_summary", "attack_phase", "asg_risk_score", "asg_confidence", "metadata", "last_seen"])
+            elif metadata:
+                indicator.metadata = {**indicator.metadata, **metadata}
+                indicator.save(update_fields=["metadata"])
+            persisted.append(indicator)
+
+    return persisted
+
+
+def _journey_session_id(*, session_id: str = "", ip_address: str = "", user_agent: str = "", path: str = "") -> str:
+    session_id = str(session_id or "")[:80]
+    if session_id:
+        return session_id
+    return derive_session_id(ip_address=ip_address or "", user_agent=user_agent or "", accept_language="", cookie_seed="", path=path or "")
+
+
+def _journey_event(
+    *,
+    timestamp,
+    kind: str,
+    source: str,
+    detail: str,
+    attack_class: str,
+    ip: str | None,
+    ua: str,
+    payload: str = "",
+) -> dict[str, Any]:
+    return {
+        "timestamp": timestamp,
+        "kind": kind,
+        "source": source,
+        "detail": detail,
+        "attack_class": attack_class,
+        "ip": ip,
+        "ua": ua,
+        "payload": payload,
+    }
+
+
+def _journey_event_records(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "timestamp": ev["ts"].isoformat(),
+            "kind": ev["kind"],
+            "source": ev["source"],
+            "detail": ev["detail"],
+            "attack_class": ev.get("attack_class"),
+            "ip": ev.get("ip"),
+            "ua": ev.get("ua", ""),
+            "payload": ev.get("payload", ""),
+        }
+        for ev in events
+    ]
+
+
+def _journey_tools_used(events: list[dict[str, Any]]) -> list[str]:
+    combined = " ".join(
+        " ".join(
+            [
+                str(ev.get("source", "")),
+                str(ev.get("detail", "")),
+                str(ev.get("attack_class", "")),
+                str(ev.get("payload", "")),
+                str(ev.get("ua", "")),
+            ]
+        )
+        for ev in events
+    ).lower()
+
+    tools: list[str] = []
+    if "sqlmap" in combined:
+        tools.append("sqlmap")
+    if SCANNER_PATTERN.search(combined) or any(token in combined for token in ["nikto", "nmap", "gobuster", "dirbuster", "acunetix", "burp"]):
+        tools.append("automated_scanner")
+    if "curl" in combined:
+        tools.append("curl")
+    if "wget" in combined:
+        tools.append("wget")
+    if any(token in combined for token in ["python-requests", "requests/"]):
+        tools.append("python-requests")
+    if any(token in combined for token in ["mozilla/", "chrome/", "safari/", "firefox/", "edge/", "playwright", "puppeteer", "headlesschrome"]):
+        tools.append("browser")
+    if COMMAND_PATTERN.search(combined):
+        tools.append("command_line")
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for tool in tools:
+        if tool and tool not in seen:
+            seen.add(tool)
+            ordered.append(tool)
+    return ordered
+
+
+def _journey_escalation_attempts(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    attempts: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for ev in events:
+        detail = str(ev.get("detail", ""))
+        payload = str(ev.get("payload", ""))
+        combined = f"{detail} {payload}"
+        timestamp = ev["ts"].isoformat()
+        attack_class = str(ev.get("attack_class", ""))
+
+        candidates: list[dict[str, Any]] = []
+        detail_lower = detail.lower()
+        if any(token in detail_lower for token in ["/admin", "phpmyadmin", "grafana", "jenkins", "dashboard", "cms", "portal", "internal", "debug", "api/docs", "api/internal", "api/admin"]):
+            candidates.append({"type": "admin_access_attempt", "path": detail, "timestamp": timestamp})
+        if SQLI_PATTERN.search(combined) or attack_class == "SQL_INJECTION_ATTEMPT":
+            candidates.append({"type": "sql_injection", "confidence": 0.93, "detail": detail, "timestamp": timestamp})
+        if COMMAND_PATTERN.search(combined) or "webshell" in combined.lower() or attack_class in {"webshell-suspected", "high-entropy"}:
+            candidates.append({"type": "command_execution", "confidence": 0.95, "detail": detail, "timestamp": timestamp})
+        if ev.get("kind") == "upload" and attack_class not in {"clean", ""}:
+            candidates.append({"type": "suspicious_upload", "verdict": attack_class, "timestamp": timestamp})
+        if ev.get("kind") == "payment" and attack_class not in {"paid", "settled", "completed"}:
+            candidates.append({"type": "payment_probe", "status": attack_class, "timestamp": timestamp})
+        if ev.get("kind") == "support" and detail:
+            candidates.append({"type": "support_discovery", "ticket_id": detail, "timestamp": timestamp})
+
+        for candidate in candidates:
+            key = (str(candidate.get("type", "")), str(candidate.get("timestamp", "")))
+            if key in seen:
+                continue
+            seen.add(key)
+            attempts.append(candidate)
+
+    return attempts
+
+
+def _journey_intent_label(phases: list[dict[str, Any]], tools_used: list[str], escalation_attempts: list[dict[str, Any]]) -> str:
+    phase_names = {str(phase.get("phase", "")) for phase in phases}
+    escalation_types = {str(item.get("type", "")) for item in escalation_attempts}
+
+    if "credential_access" in phase_names or "brute_force" in escalation_types:
+        return "Credential theft"
+    if "data_exfiltration" in phase_names:
+        return "Data exfiltration"
+    if "execution_or_exploitation" in phase_names or "command_execution" in escalation_types:
+        return "Code execution"
+    if "injection_attempts" in phase_names or "sql_injection" in escalation_types:
+        return "Injection testing"
+    if "persistence_or_escalation" in phase_names or "admin_access_attempt" in escalation_types:
+        return "Privilege escalation"
+    if tools_used:
+        return "Automated probing"
+    return "Reconnaissance"
+
+
+def _journey_scores(
+    phases: list[dict[str, Any]],
+    escalation_attempts: list[dict[str, Any]],
+    tools_used: list[str],
+    event_count: int,
+) -> tuple[float, float, float]:
+    risk_weights = {
+        "noise_or_observation": 5.0,
+        "reconnaissance": 12.0,
+        "configuration_discovery": 28.0,
+        "credential_access": 55.0,
+        "injection_attempts": 65.0,
+        "execution_or_exploitation": 85.0,
+        "data_exfiltration": 78.0,
+        "persistence_or_escalation": 70.0,
+    }
+
+    confidence_values = [float(phase.get("confidence", 0.0)) for phase in phases if isinstance(phase, dict)]
+    phase_risk = 0.0
+    for phase in phases:
+        if not isinstance(phase, dict):
+            continue
+        phase_name = str(phase.get("phase", ""))
+        phase_risk = max(phase_risk, risk_weights.get(phase_name, 15.0) + float(phase.get("confidence", 0.0)) * 10.0)
+
+    risk_score = min(100.0, round(phase_risk + min(20.0, len(escalation_attempts) * 5.0) + min(10.0, len(tools_used) * 2.0) + min(10.0, event_count / 20.0), 2))
+    confidence_score = round((sum(confidence_values) / len(confidence_values) * 100.0) if confidence_values else 0.0, 2)
+
+    intent_score = 20.0
+    if any(phase.get("phase") == "credential_access" for phase in phases):
+        intent_score = max(intent_score, 80.0)
+    if any(phase.get("phase") == "injection_attempts" for phase in phases):
+        intent_score = max(intent_score, 75.0)
+    if any(phase.get("phase") == "execution_or_exploitation" for phase in phases):
+        intent_score = max(intent_score, 85.0)
+    if any(phase.get("phase") == "data_exfiltration" for phase in phases):
+        intent_score = max(intent_score, 90.0)
+    if any(phase.get("phase") == "persistence_or_escalation" for phase in phases):
+        intent_score = max(intent_score, 70.0)
+    if tools_used and intent_score < 35.0:
+        intent_score = 35.0
+
+    return risk_score, confidence_score, round(intent_score, 2)
+
+
+def _journey_campaign_id(phases: list[dict[str, Any]], tools_used: list[str], escalation_attempts: list[dict[str, Any]]) -> str:
+    if "sqlmap" in tools_used:
+        return "SQLMAP_CAMPAIGN_001"
+    if "automated_scanner" in tools_used and any(phase.get("phase") in {"reconnaissance", "configuration_discovery", "credential_access"} for phase in phases):
+        return "SCANNER_CAMPAIGN_001"
+    if any(item.get("type") == "sql_injection" for item in escalation_attempts):
+        return "SQLI_CAMPAIGN_001"
+
+    signature = "|".join(
+        [
+            ",".join(sorted(tools_used)),
+            ",".join(sorted({str(phase.get("phase", "")) for phase in phases if isinstance(phase, dict)})),
+            ",".join(sorted({str(item.get("type", "")) for item in escalation_attempts if isinstance(item, dict)})),
+        ]
+    ).strip("|")
+    if not signature:
+        return ""
+    digest = hashlib.sha1(signature.encode("utf-8", errors="ignore")).hexdigest()[:6].upper()
+    return f"MIXED_CAMPAIGN_{digest}"
+
+
 def build_attack_journeys(*, lookback_hours: int = 24, proximity_seconds: int = 900, limit: int = 200) -> list[dict[str, Any]]:
     """Aggregate events into attack journeys.
 
@@ -955,27 +1486,153 @@ def build_attack_journeys(*, lookback_hours: int = 24, proximity_seconds: int = 
     teles = list(TelemetryEvent.objects.filter(timestamp__gte=cutoff).order_by("timestamp")[:limit * 3])
     logins = list(LoginAttempt.objects.filter(timestamp__gte=cutoff).order_by("timestamp")[:limit * 3])
     alerts = list(AlertEvent.objects.filter(timestamp__gte=cutoff).order_by("timestamp")[:limit * 3])
+    uploads = list(UploadArtifact.objects.filter(timestamp__gte=cutoff).order_by("timestamp")[:limit * 3])
+    payments = list(PaymentRecord.objects.filter(timestamp__gte=cutoff).order_by("timestamp")[:limit * 3])
+    tickets = list(SupportTicket.objects.filter(timestamp__gte=cutoff).order_by("timestamp")[:limit * 3])
 
     # normalize into unified events
     unified = []
     for e in logs:
-        session = derive_session_id(ip_address=e.ip_address or "", user_agent=e.user_agent or "", accept_language="", cookie_seed="", path=e.requested_url)
-        unified.append({"ts": e.timestamp, "kind": "request", "session_id": session, "ip": e.ip_address, "ua": e.user_agent, "detail": e.requested_url, "payload": e.payload, "attack_class": e.attack_classification, "ref": getattr(e, 'id', None)})
+        session = _journey_session_id(session_id=e.session_id, ip_address=e.ip_address or "", user_agent=e.user_agent or "", path=e.requested_url)
+        unified.append(
+            {
+                "ts": e.timestamp,
+                "session_id": session,
+                **_journey_event(
+                    timestamp=e.timestamp,
+                    kind="request",
+                    source="HoneypotLog",
+                    detail=e.requested_url,
+                    attack_class=e.attack_classification,
+                    ip=e.ip_address,
+                    ua=e.user_agent or "",
+                    payload=e.payload[:400],
+                ),
+            }
+        )
     for t in teles:
-        unified.append({"ts": t.timestamp, "kind": "telemetry", "session_id": t.session_id or derive_session_id(ip_address=t.ip_address or "", user_agent=t.user_agent or "", accept_language="", cookie_seed="", path=t.path), "ip": t.ip_address, "ua": t.user_agent, "detail": t.path, "payload": json.dumps(t.details) if t.details else "", "attack_class": "telemetry", "ref": getattr(t, 'id', None)})
+        session = _journey_session_id(session_id=t.session_id, ip_address=t.ip_address or "", user_agent=t.user_agent or "", path=t.path)
+        unified.append(
+            {
+                "ts": t.timestamp,
+                "session_id": session,
+                **_journey_event(
+                    timestamp=t.timestamp,
+                    kind="telemetry",
+                    source="TelemetryEvent",
+                    detail=t.path,
+                    attack_class="telemetry",
+                    ip=t.ip_address,
+                    ua=t.user_agent or "",
+                    payload=json.dumps(t.details, default=str) if t.details else "",
+                ),
+            }
+        )
     for l in logins:
-        session = derive_session_id(ip_address=l.ip_address or "", user_agent=l.user_agent or "", accept_language="", cookie_seed="", path=l.requested_url)
-        unified.append({"ts": l.timestamp, "kind": "login", "session_id": session, "ip": l.ip_address, "ua": l.user_agent, "detail": l.requested_url, "payload": l.password_submitted[:400], "attack_class": ("brute_force" if not l.success else "login"), "ref": getattr(l, 'id', None)})
+        session = _journey_session_id(session_id=l.session_id, ip_address=l.ip_address or "", user_agent=l.user_agent or "", path=l.requested_url)
+        unified.append(
+            {
+                "ts": l.timestamp,
+                "session_id": session,
+                **_journey_event(
+                    timestamp=l.timestamp,
+                    kind="login",
+                    source="LoginAttempt",
+                    detail=l.requested_url,
+                    attack_class=("brute_force" if not l.success else "login"),
+                    ip=l.ip_address,
+                    ua=l.user_agent or "",
+                    payload=l.password_submitted[:400],
+                ),
+            }
+        )
     for a in alerts:
-        session = derive_session_id(ip_address=a.ip_address or "", user_agent=a.user_agent or "", accept_language="", cookie_seed="", path=a.requested_url)
-        unified.append({"ts": a.timestamp, "kind": "alert", "session_id": session, "ip": a.ip_address, "ua": a.user_agent, "detail": a.detail, "payload": json.dumps(a.metadata)[:400], "attack_class": a.alert_type, "ref": getattr(a, 'id', None)})
+        session = _journey_session_id(
+            session_id=(a.metadata or {}).get("session_id", ""),
+            ip_address=a.ip_address or "",
+            user_agent=a.user_agent or "",
+            path=a.requested_url,
+        )
+        unified.append(
+            {
+                "ts": a.timestamp,
+                "session_id": session,
+                **_journey_event(
+                    timestamp=a.timestamp,
+                    kind="alert",
+                    source="AlertEvent",
+                    detail=a.detail,
+                    attack_class=a.alert_type,
+                    ip=a.ip_address,
+                    ua=a.user_agent or "",
+                    payload=json.dumps(a.metadata, default=str)[:400],
+                ),
+            }
+        )
+    for u in uploads:
+        metadata = u.metadata or {}
+        session = _journey_session_id(session_id=metadata.get("session_id", ""), ip_address=u.uploader_ip or metadata.get("ip_address", ""), user_agent=u.user_agent or metadata.get("user_agent", ""), path=u.filename)
+        unified.append(
+            {
+                "ts": u.timestamp,
+                "session_id": session,
+                **_journey_event(
+                    timestamp=u.timestamp,
+                    kind="upload",
+                    source="UploadArtifact",
+                    detail=u.filename,
+                    attack_class=u.verdict,
+                    ip=u.uploader_ip or metadata.get("ip_address"),
+                    ua=u.user_agent or metadata.get("user_agent", ""),
+                    payload=json.dumps(metadata, default=str)[:400],
+                ),
+            }
+        )
+    for p in payments:
+        metadata = p.metadata or {}
+        session = _journey_session_id(session_id=metadata.get("session_id", ""), ip_address=metadata.get("ip_address", ""), user_agent=metadata.get("user_agent", ""), path=p.payment_id)
+        unified.append(
+            {
+                "ts": p.timestamp,
+                "session_id": session,
+                **_journey_event(
+                    timestamp=p.timestamp,
+                    kind="payment",
+                    source="PaymentRecord",
+                    detail=p.payment_id,
+                    attack_class=p.status,
+                    ip=metadata.get("ip_address"),
+                    ua=metadata.get("user_agent", ""),
+                    payload=json.dumps(metadata, default=str)[:400],
+                ),
+            }
+        )
+    for s in tickets:
+        metadata = s.metadata or {}
+        session = _journey_session_id(session_id=metadata.get("session_id", ""), ip_address=metadata.get("ip_address", ""), user_agent=metadata.get("user_agent", ""), path=s.ticket_id)
+        unified.append(
+            {
+                "ts": s.timestamp,
+                "session_id": session,
+                **_journey_event(
+                    timestamp=s.timestamp,
+                    kind="support",
+                    source="SupportTicket",
+                    detail=s.ticket_id,
+                    attack_class=s.status,
+                    ip=metadata.get("ip_address"),
+                    ua=metadata.get("user_agent", ""),
+                    payload=json.dumps(metadata, default=str)[:400],
+                ),
+            }
+        )
 
     unified.sort(key=lambda x: x["ts"])
 
-    # group by session_id first
+    # group by canonical session_id first
     journeys = {}
     for ev in unified:
-        sid = ev.get("session_id") or f"ip:{ev.get('ip') or 'unknown'}|ua:{(ev.get('ua') or '')[:80]}"
+        sid = ev.get("session_id") or _journey_session_id(ip_address=ev.get("ip") or "", user_agent=ev.get("ua") or "", path=ev.get("detail") or "")
         if sid not in journeys:
             journeys[sid] = {"session_id": sid, "events": [], "ips": set(), "uas": set(), "first_seen": ev["ts"], "last_seen": ev["ts"]}
         j = journeys[sid]
@@ -994,7 +1651,11 @@ def build_attack_journeys(*, lookback_hours: int = 24, proximity_seconds: int = 
     for sid, j in journeys.items():
         # compute seconds_spent and phases
         secs = int((j["last_seen"] - j["first_seen"]).total_seconds()) if j["last_seen"] and j["first_seen"] else 0
-        phases = _detect_phases(j["events"])
+        phases = _sequence_detect_phases(j["events"])
+        event_records = _journey_event_records(j["events"])
+        tools_used = _journey_tools_used(j["events"])
+        escalation_attempts = _journey_escalation_attempts(j["events"])
+        risk_score, confidence_score, intent_score = _journey_scores(phases, escalation_attempts, tools_used, len(j["events"]))
         summary = {
             "session_id": j["session_id"],
             "first_seen": j["first_seen"].isoformat(),
@@ -1004,7 +1665,16 @@ def build_attack_journeys(*, lookback_hours: int = 24, proximity_seconds: int = 
             "ips": list(j["ips"])[:3],
             "uas": list(j["uas"])[:3],
             "phases": phases,
-            "sample_events": [{"ts": ev["ts"].isoformat(), "kind": ev["kind"], "detail": ev["detail"], "attack_class": ev.get("attack_class") } for ev in j["events"][:10]],
+            "tools_used": tools_used,
+            "escalation_attempts": escalation_attempts,
+            "risk_score": risk_score,
+            "confidence_score": confidence_score,
+            "intent_score": intent_score,
+            "intent_label": _journey_intent_label(phases, tools_used, escalation_attempts),
+            "campaign_id": _journey_campaign_id(phases, tools_used, escalation_attempts),
+            "sample_events": event_records[:10],
+            "recon_path": event_records,
+            "payload_evolution": event_records,
         }
         merged.append(summary)
 
@@ -1053,8 +1723,8 @@ def _sequence_detect_phases(events: list[dict[str, Any]], *, max_events: int = 8
     for i in range(1, len(ts_seq)):
         try:
             intervals.append((ts_seq[i] - ts_seq[i - 1]).total_seconds())
-        except Exception:
-            pass
+        except Exception as e:
+           print("AttackJourney aggregation error:", e)
     avg_interval = sum(intervals) / len(intervals) if intervals else 0
 
     phases: list[dict[str, Any]] = []

@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase, Client
 from django.urls import reverse
@@ -40,3 +42,13 @@ class BasicViewsTest(TestCase):
         staff_home = self.client.get(reverse("home"))
         self.assertContains(staff_home, "Surfaces")
         self.assertContains(staff_home, "Attacker Timeline")
+
+    def test_successful_login_skips_heavy_detection_pipeline(self):
+        user_model = get_user_model()
+        user = user_model.objects.create_user(username="viewer", password="viewer-pass-123")
+
+        with patch("store.detection.run_detection_pipeline") as mocked_detection:
+            response = self.client.post(reverse("login"), {"username": "viewer", "password": "viewer-pass-123"})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(mocked_detection.called)

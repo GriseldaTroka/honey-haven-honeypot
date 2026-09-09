@@ -5,7 +5,7 @@ import logging
 from django.http import HttpResponsePermanentRedirect
 from django.utils import timezone
 from django.conf import settings as _settings
-from .utils import get_client_ip
+from .utils import get_client_ip, get_or_create_honey_session_id
 
 from .utils import detect_suspicion, log_event, request_payload_to_text
 
@@ -27,11 +27,23 @@ class AttackerLoggingMiddleware:
         except Exception:
             pass
 
-        # Normalize host for local development to ensure a single origin for session cookies.
-        # Only redirect for safe methods (GET/HEAD) to avoid breaking POST-based logins.
+        # Fast-path for lightweight internal endpoints polled by the SOC frontend.
+        # These must not trigger logging, detection, ASG updates, or IO writes.
+        if request.path in ("/api/internal/staff-status/", "/api/internal/status", "/api/internal/config"):
+            return self.get_response(request)
+
+        # Canonical visitor identity for the current Django session (best-effort).
+        # Avoid creating or modifying the session here for fast internal endpoints.
+        try:
+            get_or_create_honey_session_id(request)
+        except Exception:
+            pass
+
+        # Normalize host for local development to keep the Django session cookie on the
+        # same loopback origin as the Vite proxy. Avoid redirecting away from the dev SPA
+        # host to preserve the authenticated session between frontend and backend.
         host = request.get_host().split(":")[0]
-        if host == "localhost" and request.method in ("GET", "HEAD"):
-            # Redirect to 127.0.0.1 preserving scheme, port and path.
+        if host == "localhost" and request.method in ("GET", "HEAD") and not request.path.startswith("/api/"):
             port = request.get_port()
             new_host = f"127.0.0.1:{port}" if port else "127.0.0.1"
             url = f"{request.scheme}://{new_host}{request.get_full_path()}"
@@ -45,15 +57,6 @@ class AttackerLoggingMiddleware:
         is_suspicious, reason = detect_suspicion(request, payload)
 
         response = self.get_response(request)
-
-        # Debug: log staff/auth/session state to help validate auth propagation across tabs
-        try:
-            is_staff = getattr(request.user, "is_staff", False)
-            uname = getattr(request.user, "username", None) if getattr(request.user, "is_authenticated", False) else None
-            session_keys = list(request.session.keys()) if hasattr(request, "session") else []
-            logger.debug("Auth debug: path=%s is_staff=%s user=%s session_keys=%s", request.path, is_staff, uname, session_keys)
-        except Exception:
-            logger.exception("Failed to log auth debug info")
 
         event = "REQUEST"
         if request.path.startswith("/api/"):

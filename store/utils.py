@@ -1,10 +1,13 @@
 import json
 import logging
 import hashlib
+import secrets
 import re
+import time
 from datetime import timedelta
 from typing import Any
 
+from django.db import OperationalError
 from django.http import HttpRequest
 from django.utils import timezone
 
@@ -22,6 +25,7 @@ PROBING_PATH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 COMMAND_PATTERN = re.compile(r"(whoami|uname\s+-a|pwd|ls|cat\s+/etc/passwd|ifconfig|netstat)", re.IGNORECASE)
+API_SUSPICIOUS_KEYWORDS = ("admin", "password", "token", "database", "config", "dump")
 
 
 def get_client_ip(request: HttpRequest) -> str:
@@ -31,12 +35,27 @@ def get_client_ip(request: HttpRequest) -> str:
     return request.META.get("REMOTE_ADDR", "")
 
 
+def get_or_create_honey_session_id(request: HttpRequest) -> str:
+    session = getattr(request, "session", None)
+    if session is None:
+        return secrets.token_hex(16)
+
+    honey_session_id = session.get("honey_session_id")
+    if not honey_session_id:
+        honey_session_id = secrets.token_hex(16)
+        session["honey_session_id"] = honey_session_id
+        session.modified = True
+    return str(honey_session_id)[:80]
+
+
 def derive_session_id(*, ip_address: str = "", user_agent: str = "", accept_language: str = "", cookie_seed: str = "", path: str = "") -> str:
     """Derive a stable session-like identifier for correlating attacker activity.
 
     The identifier is intentionally deterministic for the same client fingerprint so
     that logs, alerts, and the timeline UI can be grouped without storing extra state.
     """
+    if cookie_seed:
+        return str(cookie_seed)[:80]
     seed = "|".join([ip_address, user_agent, accept_language, cookie_seed])
     digest = hashlib.sha256(seed.encode("utf-8", errors="ignore")).hexdigest()
     return digest[:24]
@@ -97,7 +116,12 @@ def classify_attack(request: HttpRequest, payload: str, event_type: str) -> tupl
     if SQLI_PATTERN.search(combined):
         return "SQL_INJECTION_ATTEMPT", "Matched SQL injection pattern in URL/query/payload"
 
-    login_related = event_type == "LOGIN_ATTEMPT" or request.path.startswith("/login") or request.path.startswith("/api/login")
+    login_related = (
+        event_type == "LOGIN_ATTEMPT"
+        or request.path.startswith("/login")
+        or request.path.startswith("/api/login")
+        or request.path.startswith("/api/admin/login")
+    )
     if login_related:
         failed_login_count = LoginAttempt.objects.filter(
             ip_address=ip,
@@ -117,6 +141,37 @@ def classify_attack(request: HttpRequest, payload: str, event_type: str) -> tupl
     return "NORMAL_TRAFFIC", "No attack signature matched"
 
 
+def detect_api_probe_suspicion(request: HttpRequest, payload: str) -> tuple[bool, str, list[str], str]:
+    combined = f"{request.path} {request.META.get('QUERY_STRING', '')} {payload}".lower()
+    suspicious_keywords = sorted({keyword for keyword in API_SUSPICIOUS_KEYWORDS if keyword in combined})
+
+    ip = get_client_ip(request)
+    recent_window = timezone.now() - timedelta(minutes=2)
+    recent_logs = HoneypotLog.objects.filter(ip_address=ip, timestamp__gte=recent_window)
+    admin_hits = recent_logs.filter(requested_url__startswith="/api/admin").count()
+    internal_hits = recent_logs.filter(requested_url__startswith="/api/internal").count()
+    api_hits = recent_logs.filter(requested_url__startswith="/api/").count()
+
+    repeated_admin_access = admin_hits >= 3 or internal_hits >= 3 or api_hits >= 6
+    posted_sensitive_data = request.method == "POST" and request.path.startswith(("/api/admin", "/api/internal"))
+    suspicious = bool(suspicious_keywords) or repeated_admin_access or posted_sensitive_data
+
+    if suspicious_keywords:
+        severity = "high" if any(keyword in {"password", "token", "database", "dump"} for keyword in suspicious_keywords) else "medium"
+        reason = f"Sensitive keyword probe detected: {', '.join(suspicious_keywords)}"
+    elif repeated_admin_access:
+        severity = "medium"
+        reason = "Multiple administrative API requests from the same IP in a short window"
+    elif posted_sensitive_data:
+        severity = "medium"
+        reason = "Sensitive administrative POST request"
+    else:
+        severity = "low"
+        reason = "Decoy API interaction"
+
+    return suspicious, reason, suspicious_keywords, severity
+
+
 def log_event(
     request: HttpRequest,
     *,
@@ -126,14 +181,9 @@ def log_event(
     is_suspicious: bool = False,
     suspicion_reason: str = "",
     status_code: int = 200,
+    trigger_detection: bool = False,
 ) -> None:
-    session_id = derive_session_id(
-        ip_address=get_client_ip(request),
-        user_agent=request.META.get("HTTP_USER_AGENT", "")[:1000],
-        accept_language=request.META.get("HTTP_ACCEPT_LANGUAGE", "")[:200],
-        cookie_seed=request.COOKIES.get("sessionid", "")[:80],
-        path=request.path,
-    )
+    session_id = get_or_create_honey_session_id(request)
     attack_classification, classification_reason = classify_attack(request, payload, event_type)
     derived_suspicious = is_suspicious or attack_classification != "NORMAL_TRAFFIC"
     final_reason = suspicion_reason if suspicion_reason else (classification_reason if derived_suspicious else "")
@@ -153,20 +203,90 @@ def log_event(
         status_code=status_code,
     )
 
-    HoneypotLog.objects.create(
-        ip_address=get_client_ip(request),
-        user_agent=request.META.get("HTTP_USER_AGENT", "")[:1000],
-        requested_url=request.get_full_path()[:1000],
-        method=request.method,
-        query_params=request.META.get("QUERY_STRING", "")[:2000],
-        payload=payload[:4000],
-        username=username[:150],
-        event_type=event_type,
-        attack_classification=attack_classification,
-        is_suspicious=derived_suspicious,
-        suspicion_reason=final_reason[:300],
-        status_code=status_code,
-    )
+    for attempt in range(3):
+        try:
+            created_log = HoneypotLog.objects.create(
+                ip_address=get_client_ip(request),
+                session_id=session_id,
+                user_agent=request.META.get("HTTP_USER_AGENT", "")[:1000],
+                requested_url=request.get_full_path()[:1000],
+                method=request.method,
+                query_params=request.META.get("QUERY_STRING", "")[:2000],
+                payload=payload[:4000],
+                username=username[:150],
+                event_type=event_type,
+                attack_classification=attack_classification,
+                is_suspicious=derived_suspicious,
+                suspicion_reason=final_reason[:300],
+                status_code=status_code,
+            )
+            should_run_detection = bool(trigger_detection or derived_suspicious)
+            if should_run_detection:
+                try:
+                    from .deception import persist_fake_iocs
+
+                    persist_fake_iocs(
+                        session_id=session_id,
+                        source_event="HoneypotLog",
+                        source_model="HoneypotLog",
+                        source_object_id=created_log.id if created_log else None,
+                        text=" ".join(
+                            [
+                                request.get_full_path(),
+                                request.META.get("QUERY_STRING", ""),
+                                payload,
+                                username,
+                                request.META.get("HTTP_USER_AGENT", ""),
+                            ]
+                        ),
+                        metadata={"event_type": event_type, "attack_classification": attack_classification},
+                        evidence_summary=f"{event_type} on {request.get_full_path()[:120]}",
+                    )
+                    from .detection import run_detection_pipeline
+
+                    run_detection_pipeline(
+                        session_id,
+                        trigger={
+                            "source_model": "HoneypotLog",
+                            "source_object_id": created_log.id if created_log else None,
+                            "source_event": event_type,
+                            "ip_address": get_client_ip(request),
+                            "request_path": request.path,
+                            "payload": payload,
+                        },
+                    )
+                except Exception:
+                    pass
+            break
+        except OperationalError:
+            if attempt == 2:
+                break
+            time.sleep(0.2)
+
+    # Ensure the flag is always defined even if DB writes failed repeatedly
+    try:
+        should_run_detection
+    except UnboundLocalError:
+        should_run_detection = False
+
+    if not should_run_detection:
+        return
+
+    if request.path.rstrip("/") != "/api/upload/trap":
+        try:
+            from .asg import update_attacker_state
+
+            update_attacker_state(
+                session_id=session_id,
+                event_type=event_type,
+                path=request.path,
+                request=request,
+                source_model="HoneypotLog",
+                payload=payload,
+            )
+        except Exception:
+            pass
+
     # Queue background job to update an AttackJourney record for this session.
     try:
         # Prefer debounce via Redis to batch session ids
