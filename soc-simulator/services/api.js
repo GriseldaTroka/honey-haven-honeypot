@@ -33,6 +33,11 @@ async function request(path, options = {}) {
   const externalSignal = options.signal
   const timeoutMs = Number(options.timeout ?? REQUEST_TIMEOUT_MS)
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+  // Debug: log that a timeout has been scheduled for this request
+  try {
+    // prefer console.debug but fall back to console.log if not available
+    (console.debug || console.log)(`[api] scheduled timeout ${timeoutMs}ms for ${method} ${API_BASE}${path}`)
+  } catch (e) {}
   let externalAbortHandler = null
 
   if (externalSignal) {
@@ -63,8 +68,11 @@ async function request(path, options = {}) {
       }
 
       const headersObj = {
-        'Content-Type': 'application/json',
         ...(options.headers || {}),
+      }
+      // Only set Content-Type for requests that may have a body
+      if (method !== 'GET' && method !== 'HEAD') {
+        headersObj['Content-Type'] = 'application/json'
       }
       if (method !== 'GET' && method !== 'HEAD') {
         const token = getCookie('csrftoken')
@@ -76,18 +84,27 @@ async function request(path, options = {}) {
       delete fetchOptions.signal
       delete fetchOptions.timeout
 
+      // Debug: log fetch start
+      try { (console.debug || console.log)(`[api] fetch start ${method} ${API_BASE}${path}`, { timeoutMs, dedupe: useRequestDeduping }) } catch (e) {}
+      const fetchStart = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()
       response = await fetch(`${API_BASE}${path}`, {
         credentials: 'include',
         headers: headersObj,
         ...fetchOptions,
         signal: controller.signal,
       })
+      const fetchEnd = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()
+      try { (console.debug || console.log)(`[api] fetch resolved ${method} ${API_BASE}${path}`, { status: response.status, duration_ms: Math.round(fetchEnd - fetchStart) }) } catch (e) {}
     } catch (error) {
+      // Debug: log AbortError and other errors
+      try { (console.debug || console.log)(`[api] fetch error for ${method} ${API_BASE}${path}`, { name: error?.name, message: error?.message }) } catch (e) {}
       if (error?.name === 'AbortError') {
         throw new Error(`Request timeout for ${path}`)
       }
       throw error
     } finally {
+      // Debug: clear timeout
+      try { (console.debug || console.log)(`[api] clearing timeout for ${method} ${API_BASE}${path}`) } catch (e) {}
       clearTimeout(timeoutId)
       if (externalSignal && externalAbortHandler) {
         externalSignal.removeEventListener('abort', externalAbortHandler)
