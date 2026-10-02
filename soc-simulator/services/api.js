@@ -75,7 +75,8 @@ async function request(path, options = {}) {
         headersObj['Content-Type'] = 'application/json'
       }
       if (method !== 'GET' && method !== 'HEAD') {
-        const token = getCookie('csrftoken')
+        // Read either Django's default 'csrftoken' or legacy 'csrf' cookie
+        const token = getCookie('csrftoken') || getCookie('csrf')
         if (token) headersObj['X-CSRFToken'] = token
       }
 
@@ -232,16 +233,8 @@ export function getInvestigationGraph(limit = 250, sessionId = '') {
   return request(`/api/investigation/graph/?limit=${limit}${sessionQuery}`)
 }
 
-export async function getOverview(limit = 20) {
-  const response = await fetch(`/api/dashboard/overview/?limit=${limit}`, {
-    credentials: 'include',
-  })
-
-  if (!response.ok) {
-    throw new Error(`Request failed (${response.status})`)
-  }
-
-  return response.json()
+export function getOverview(limit = 20, options = {}) {
+  return request(`/api/dashboard/overview/?limit=${limit}`, options)
 }
 
 export function getSearchResults(query) {

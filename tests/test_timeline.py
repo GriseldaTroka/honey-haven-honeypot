@@ -14,7 +14,7 @@ class TimelineReplayTest(TestCase):
         self.user.save(update_fields=["is_staff"])
         self.client.force_login(self.user)
 
-    def test_timeline_view_renders(self):
+    def test_timeline_json_returns_events(self):
         session_id = derive_session_id(ip_address="203.0.113.10", user_agent="Mozilla/5.0")
         HoneypotLog.objects.create(
             ip_address="203.0.113.10",
@@ -66,7 +66,6 @@ class TimelineReplayTest(TestCase):
             notes="Replay test session",
         )
 
-        resp = self.client.get(reverse("attacker_timeline"), {"session": session_id})
+        resp = self.client.get(reverse("attacker_timeline_json"), {"session": session_id})
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "Attack Timeline Replay")
-        self.assertContains(resp, session_id)
+        self.assertIn(session_id, resp.json()["events"][0]["session_id"])

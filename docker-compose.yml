@@ -13,7 +13,8 @@ services:
         HONEYPOT_TELEGRAM_WEBHOOK_URL: ""
         HONEYPOT_ALERT_EMAIL: ""
       volumes:
-        - .:/app
+         - .:/app
+         - sqlite-data:/data
       restart: unless-stopped
       secrets:
         - django_secret
@@ -94,8 +95,9 @@ services:
         PYTHONDONTWRITEBYTECODE: "1"
         PYTHONUNBUFFERED: "1"
       volumes:
-        - .:/app
-        - ./logs:/var/log/honey
+          - .:/app
+          - sqlite-data:/data
+          - ./logs:/var/log/honey
       restart: unless-stopped
       depends_on:
         - web
@@ -193,10 +195,11 @@ volumes:
   cowrie-data:
   dionaea-data:
   conpot-data:
+  sqlite-data:
 
 secrets:
   # Docker swarm / compose secrets (for production). For local testing you can
   # create a file at infra/secrets/django_secret and reference it when running
   # `docker secret create django_secret infra/secrets/django_secret`.
   django_secret:
-    file: infra/secrets/django_secret
+    file: infra/secrets/django_secret.example

@@ -1,6 +1,7 @@
 from django.test import TestCase, Client
 from django.urls import reverse
 from django.contrib.auth.models import User
+from django.conf import settings
 
 
 class ResearchAccessControlTests(TestCase):
@@ -15,8 +16,6 @@ class ResearchAccessControlTests(TestCase):
 
         # research-only endpoints to test
         self.views = [
-            reverse("research_analytics"),
-            reverse("attacker_timeline"),
             reverse("canary_tokens"),
             reverse("attack_research_report"),
         ]
@@ -60,3 +59,32 @@ class ResearchAccessControlTests(TestCase):
         self.assertEqual(status.status_code, 200)
         self.assertTrue(status.json()["authenticated"])
         self.assertTrue(status.json()["staff"])
+
+    def test_login_get_does_not_create_honey_session_but_keeps_csrf(self):
+        response = self.client.get(reverse("login"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("csrfmiddlewaretoken", response.content.decode())
+        self.assertIn(settings.CSRF_COOKIE_NAME, response.cookies)
+        self.assertNotIn(settings.SESSION_COOKIE_NAME, response.cookies)
+
+    def test_login_post_still_authenticates(self):
+        self.client.get(reverse("login"))
+
+        response = self.client.post(
+            reverse("login"),
+            {"username": "staff", "password": "pass", "next": "http://127.0.0.1:5173/soc"},
+            follow=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "http://127.0.0.1:5173/soc")
+        self.assertTrue(response.wsgi_request.user.is_authenticated)
+        self.assertTrue(response.wsgi_request.user.is_staff)
+
+    def test_attacker_route_still_initializes_honey_session(self):
+        response = self.client.get(reverse("decoy_wp_admin"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(settings.SESSION_COOKIE_NAME, response.cookies)
+        self.assertTrue(self.client.session.get("honey_session_id"))

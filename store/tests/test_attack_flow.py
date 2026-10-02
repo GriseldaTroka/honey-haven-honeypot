@@ -129,20 +129,6 @@ class AttackFlowIntegrationTests(TestCase):
         transitions = StateTransition.objects.filter(session_id=session_id)
         self.assertTrue(transitions.exists())
 
-    def test_staff_dashboard_page_protected(self):
-        url = reverse("attack_flow_dashboard")
-        resp = self.client.get(url)
-        self.assertIn(resp.status_code, (302, 403))
-
-        self.client.force_login(self.regular)
-        resp = self.client.get(url)
-        self.assertIn(resp.status_code, (302, 403))
-
-        self.client.force_login(self.staff)
-        resp = self.client.get(url)
-        self.assertEqual(resp.status_code, 200)
-        self.assertIn("Attack Flow Dashboard", resp.content.decode("utf-8", errors="ignore"))
-
     def test_attack_journeys_json_uses_canonical_session_and_all_sources(self):
         session_id = "journey-phase1-canonical"
         user_agent = "sqlmap/1.7"

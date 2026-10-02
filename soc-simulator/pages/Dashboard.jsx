@@ -13,12 +13,13 @@ function Dashboard() {
 
   useEffect(() => {
     let cancelled = false
-    
 
     async function load() {
       setLoading(true)
       setError('')
       try {
+        // Do not pass an AbortController.signal here so the shared GET dedupe
+        // in `services/api.js` can coalesce duplicate requests (e.g. StrictMode remounts).
         const response = await getOverview(20)
         if (!cancelled) {
           setOverview(response)

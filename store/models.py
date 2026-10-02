@@ -53,6 +53,9 @@ class HoneypotLog(models.Model):
 
     class Meta:
         ordering = ["-timestamp"]
+        indexes = [
+            models.Index(fields=["timestamp"]),
+        ]
 
 
 class AttackerState(models.Model):
@@ -131,6 +134,9 @@ class AlertEvent(models.Model):
 
     class Meta:
         ordering = ["-timestamp"]
+        indexes = [
+            models.Index(fields=["timestamp"]),
+        ]
 
 
 class CanaryToken(models.Model):
@@ -154,7 +160,7 @@ class CanaryToken(models.Model):
 
 
 class TelemetryEvent(models.Model):
-    session_id = models.CharField(max_length=80, blank=True)
+    session_id = models.CharField(max_length=80, blank=True, db_index=True)
     event_type = models.CharField(max_length=80)
     path = models.TextField(blank=True)
     ip_address = models.GenericIPAddressField(null=True, blank=True)
@@ -164,6 +170,9 @@ class TelemetryEvent(models.Model):
 
     class Meta:
         ordering = ["-timestamp"]
+        indexes = [
+            models.Index(fields=["timestamp"]),
+        ]
 
 
 class UploadArtifact(models.Model):
@@ -303,6 +312,12 @@ class IOCIndicator(models.Model):
 
     class Meta:
         ordering = ["-last_seen"]
+        indexes = [
+            models.Index(
+                fields=["ioc_type", "ioc_value", "first_seen", "id"],
+                name="store_ioc_group_order_idx",
+            ),
+        ]
         constraints = [
             models.UniqueConstraint(fields=["session_id", "ioc_type", "ioc_value", "source_event", "source_model", "source_object_id"], name="uniq_ioc_session_type_value_source"),
         ]
@@ -409,6 +424,9 @@ class LoginAttempt(models.Model):
 
     class Meta:
         ordering = ["-timestamp"]
+        indexes = [
+            models.Index(fields=["timestamp"]),
+        ]
 
 
 class BlogPost(models.Model):

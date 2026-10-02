@@ -81,10 +81,15 @@ TEMPLATES = [
 WSGI_APPLICATION = "honeytrap.wsgi.application"
 ASGI_APPLICATION = "honeytrap.asgi.application"
 
+db_path = os.environ.get("HONEYTRAP_DB_PATH")
+if not db_path:
+    data_dir = Path("/data")
+    db_path = str(data_dir / "db.sqlite3") if data_dir.exists() else str(BASE_DIR / "db.sqlite3")
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+        "NAME": db_path,
         "OPTIONS": {
             "timeout": 20,
         },
@@ -136,7 +141,7 @@ CSRF_COOKIE_DOMAIN = os.environ.get("DJANGO_COOKIE_DOMAIN", "127.0.0.1").strip()
 CSRF_FAILURE_VIEW = "store.views.csrf_failure_view"
 # Trusted origins for CSRF checks in development (Vite dev server / proxy)
 # Allow Vite dev server on 127.0.0.1:5173 and localhost:5173 when used
-CSRF_TRUSTED_ORIGINS = [s.strip() for s in os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173").split(",") if s.strip()]
+CSRF_TRUSTED_ORIGINS = [s.strip() for s in os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5174,http://localhost:5174").split(",") if s.strip()]
 # Optional comma-separated denylist for development (e.g. "1.2.3.4,5.6.7.8")
 HONEYTRAP_DENYLIST_IPS = [i.strip() for i in os.environ.get("HONEYTRAP_DENYLIST_IPS", "").split(",") if i.strip()]
 

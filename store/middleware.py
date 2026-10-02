@@ -29,7 +29,14 @@ class AttackerLoggingMiddleware:
 
         # Fast-path for lightweight internal endpoints polled by the SOC frontend.
         # These must not trigger logging, detection, ASG updates, or IO writes.
-        if request.path in ("/api/internal/staff-status/", "/api/internal/status", "/api/internal/config"):
+        if request.path in ("/api/internal/staff-status/", "/api/internal/status", "/api/internal/config") or (
+            request.path == "/api/dashboard/overview/"
+            and getattr(getattr(request, "user", None), "is_authenticated", False)
+            and getattr(getattr(request, "user", None), "is_staff", False)
+        ):
+            return self.get_response(request)
+
+        if request.method == "GET" and request.path == "/login/":
             return self.get_response(request)
 
         # Canonical visitor identity for the current Django session (best-effort).

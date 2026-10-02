@@ -197,7 +197,7 @@ function TimelinePanel({ events = [], loading = false, error = '' }) {
             <span>{activeEvent.timestamp ? new Date(activeEvent.timestamp).toLocaleString() : 'Unknown time'}</span>
             <span>{activeEvent.source || 'unknown source'}</span>
           </div>
-          {activeEvent.session_id ? (
+          {activeEvent.session_id && activeEvent.session_id_is_canonical ? (
             <Link className="soc-link" to={`/soc/sessions/${activeEvent.session_id}`}>
               Open session {activeEvent.session_id}
             </Link>

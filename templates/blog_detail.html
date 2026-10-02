@@ -1,23 +1,32 @@
 {% extends 'base.html' %}
 
 {% block content %}
-<section class="page-hero reveal mb-4">
-    <p class="small-caps mb-2">{{ post.category }}</p>
-    <h1 class="section-title mb-2">{{ post.title }}</h1>
-    <p class="text-muted mb-0">{{ post.excerpt }}</p>
-</section>
+<article class="blog-article reveal">
+    <header class="blog-article-header">
+        <a class="blog-back-link" href="{% url 'blog' %}"><i class="bi bi-arrow-left"></i> Back to Journal</a>
+        <p class="small-caps mb-2">{{ post.category }}</p>
+        <h1 class="section-title mb-3">{{ post.title }}</h1>
+        <p class="blog-article-excerpt mb-0">{{ post.excerpt }}</p>
+    </header>
 
-<section class="reveal">
-    <div class="auth-card auth-card-luxe p-4 p-lg-5">
-        {% if post.image %}
-            <img src="{{ post.image.url }}" class="img-fluid rounded mb-4" alt="{{ post.title }}">
-        {% endif %}
+    {% if post.image %}
+        <figure class="blog-article-hero">
+            <img src="{{ post.image.url }}" alt="{{ post.title }}">
+        </figure>
+    {% endif %}
 
-        <div class="text-muted mb-3">{{ post.content|linebreaks }}</div>
-
-        <div class="mt-4 pt-2 border-top">
-            <a href="{% url 'blog' %}" class="btn btn-outline-dark btn-sm">Back to Blog</a>
-        </div>
+    <div class="blog-article-layout">
+        <aside class="blog-article-aside">
+            <span class="small-caps">Honey Haven Journal</span>
+            <span class="blog-article-rule"></span>
+            <span class="text-muted small">A thoughtful note from the hive to your table.</span>
+        </aside>
+        <div class="blog-article-content">{{ post.content|linebreaks }}</div>
     </div>
-</section>
+
+    <footer class="blog-article-footer">
+        <span class="text-muted small">More from the Honey Haven Journal</span>
+        <a href="{% url 'blog' %}" class="btn btn-outline-dark btn-sm">Browse all articles <i class="bi bi-arrow-right"></i></a>
+    </footer>
+</article>
 {% endblock %}

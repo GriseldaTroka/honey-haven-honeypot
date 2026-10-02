@@ -10,7 +10,6 @@ from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required, user_passes_test
 from django.views.decorators.csrf import csrf_exempt
 from django.db.models import Count, Q
-from django.db.models.functions import TruncDate, TruncHour, TruncMinute
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -42,12 +41,13 @@ from .deception import (
     upload_trap_report,
     upsert_attack_journey,
 )
-from .asg import build_explanation_summary, build_state_summary, get_attacker_state, update_attacker_state
+from .asg import build_explanation_summary, get_attacker_state, update_attacker_state
 from .analytics import build_attack_flow_analytics
 from .detection import (
     build_detection_alert_detail,
     build_detection_alert_list_payload,
     build_detection_dashboard,
+    build_detection_overview_payload,
     get_detection_alert,
     run_detection_pipeline,
     serialize_detection_alert,
@@ -100,11 +100,12 @@ def dashboard_overview_view(request: HttpRequest) -> JsonResponse:
     try:
         from .models import AnalystNote, InvestigationBookmark
 
-        overview["detection"] = build_detection_dashboard(limit=limit)
+        campaign_summaries = build_campaign_summaries(limit=limit)
+        overview["detection"] = build_detection_overview_payload()
         overview["attack_flow"] = build_attack_flow_analytics(limit=limit)
-        overview["campaign_intelligence"] = build_campaign_dashboard_aggregates(limit=limit)
+        overview["campaign_intelligence"] = build_campaign_dashboard_aggregates(limit=limit, campaign_summaries=campaign_summaries)
         overview["recent_sessions"] = build_session_inventory(limit=limit)
-        overview["recent_campaigns"] = build_campaign_summaries(limit=limit)
+        overview["recent_campaigns"] = campaign_summaries
 
         overview["summary"] = {
             "session_count": AttackerState.objects.count(),
@@ -564,28 +565,6 @@ def staff_status_view(request: HttpRequest) -> JsonResponse:
         pass
 
     return JsonResponse(result)
-
-
-def live_feed_page_view(request: HttpRequest) -> HttpResponse:
-    return render(
-        request,
-        "live_feed_page.html",
-        {
-            "page_title": "Live Feed",
-            "api_endpoint": "/api/live/feed/",
-        },
-    )
-
-
-def research_report_page_view(request: HttpRequest) -> HttpResponse:
-    return render(
-        request,
-        "research_report_page.html",
-        {
-            "page_title": "Research Report",
-            "api_endpoint": "/api/research/report/",
-        },
-    )
 
 
 def api_docs_page_view(request: HttpRequest) -> HttpResponse:
@@ -1566,49 +1545,6 @@ def noise_generator_view(request: HttpRequest) -> JsonResponse:
     return fake_json_response(request, {"generated": len(batch), "events": batch}, label="noise-generator")
 
 
-@user_passes_test(lambda user: user.is_staff)
-def alert_review_view(request: HttpRequest) -> HttpResponse:
-    if request.method == "POST":
-        alert_id = request.POST.get("alert_id", "")
-        action = request.POST.get("action", "")
-        alert = AlertEvent.objects.filter(id=alert_id).first()
-
-        if alert:
-            if action == "replay":
-                alert.dispatch_status = "pending"
-                alert.dispatched_at = None
-                alert.metadata = {**(alert.metadata or {}), "replay_requested": True}
-                alert.save(update_fields=["dispatch_status", "dispatched_at", "metadata"])
-                messages.success(request, f"Alert {alert.id} re-queued for dispatch.")
-            elif action == "mark_reviewed":
-                alert.dispatch_status = "reviewed"
-                alert.dispatched_at = alert.dispatched_at or timezone.now()
-                alert.metadata = {**(alert.metadata or {}), "reviewed_by": request.user.username}
-                alert.save(update_fields=["dispatch_status", "dispatched_at", "metadata"])
-                messages.success(request, f"Alert {alert.id} marked reviewed.")
-            else:
-                messages.error(request, "Unknown action requested.")
-        else:
-            messages.error(request, "Alert not found.")
-
-        return redirect("alert_review")
-
-    alerts = AlertEvent.objects.all()[:50]
-    pending_count = AlertEvent.objects.filter(dispatch_status="pending").count()
-    sent_count = AlertEvent.objects.filter(dispatch_status="sent").count()
-    reviewed_count = AlertEvent.objects.filter(dispatch_status="reviewed").count()
-    return render(
-        request,
-        "alert_review.html",
-        {
-            "alerts": alerts,
-            "pending_count": pending_count,
-            "sent_count": sent_count,
-            "reviewed_count": reviewed_count,
-        },
-    )
-
-
 def attack_research_report_view(request: HttpRequest) -> JsonResponse:
     # Provide a limited decoy report to non-staff users, full report for staff
     if not _has_staff_access(request):
@@ -1779,18 +1715,6 @@ def attack_flow_analytics_api(request: HttpRequest) -> JsonResponse:
 
 
 @user_passes_test(lambda user: user.is_staff)
-def attack_flow_dashboard_view(request: HttpRequest) -> HttpResponse:
-    return render(
-        request,
-        "attack_flow_dashboard.html",
-        {
-            "page_title": "Attack Flow Dashboard",
-            "analytics_endpoint": "/api/analytics/attack-flow/",
-        },
-    )
-
-
-@user_passes_test(lambda user: user.is_staff)
 def ioc_extraction_view(request: HttpRequest) -> JsonResponse:
     payload = request_payload_to_text(request)
     report = extract_fake_iocs(payload or request.get_full_path())
@@ -1934,311 +1858,6 @@ def mitre_mapping_view(request: HttpRequest) -> JsonResponse:
 
 
 @user_passes_test(lambda user: user.is_staff)
-def research_analytics(request: HttpRequest) -> HttpResponse:
-    logs = HoneypotLog.objects.all()
-    selected_interval = request.GET.get("interval", "hour")
-    if selected_interval not in {"minute", "hour", "day"}:
-        selected_interval = "hour"
-
-    if selected_interval == "minute":
-        trunc_function = TruncMinute("timestamp")
-        timeline_format = "%Y-%m-%d %H:%M"
-    elif selected_interval == "day":
-        trunc_function = TruncDate("timestamp")
-        timeline_format = "%Y-%m-%d"
-    else:
-        trunc_function = TruncHour("timestamp")
-        timeline_format = "%Y-%m-%d %H:00"
-
-    total_requests = logs.count()
-    suspicious_requests = logs.filter(is_suspicious=True).count()
-    login_attempts = LoginAttempt.objects.count()
-    failed_logins = LoginAttempt.objects.filter(success=False).count()
-    brute_force_count = logs.filter(attack_classification="BRUTE_FORCE_ATTACK").count()
-    sqli_count = logs.filter(attack_classification="SQL_INJECTION_ATTEMPT").count()
-    scanner_count = logs.filter(attack_classification="SCANNER_BOT_ACTIVITY").count()
-    normal_count = logs.filter(attack_classification="NORMAL_TRAFFIC").count()
-
-    top_ips = (
-        logs.exclude(ip_address__isnull=True)
-        .exclude(ip_address="")
-        .values("ip_address")
-        .annotate(total=Count("id"))
-        .order_by("-total")[:10]
-    )
-
-    top_endpoints = logs.values("requested_url").annotate(total=Count("id")).order_by("-total")[:10]
-
-    suspicious_reasons = (
-        logs.filter(is_suspicious=True)
-        .exclude(suspicion_reason="")
-        .values("suspicion_reason")
-        .annotate(total=Count("id"))
-        .order_by("-total")[:8]
-    )
-
-    timeline_data = (
-        logs.annotate(slot=trunc_function)
-        .values("slot")
-        .annotate(total=Count("id"), suspicious=Count("id", filter=Q(is_suspicious=True)))
-        .order_by("slot")
-    )
-
-    category_data = (
-        logs.values("attack_classification")
-        .annotate(total=Count("id"))
-        .order_by("-total")
-    )
-
-    daily_failures = (
-        LoginAttempt.objects.filter(success=False)
-        .annotate(day=TruncDate("timestamp"))
-        .values("day")
-        .annotate(total=Count("id"))
-        .order_by("day")
-    )
-
-    daily_labels = [entry["day"].isoformat() for entry in daily_failures if entry["day"]]
-    daily_values = [entry["total"] for entry in daily_failures]
-    endpoint_labels = [entry["requested_url"][:45] for entry in top_endpoints]
-    endpoint_values = [entry["total"] for entry in top_endpoints]
-    timeline_labels = [entry["slot"].strftime(timeline_format) for entry in timeline_data if entry["slot"]]
-    timeline_values = [entry["total"] for entry in timeline_data]
-    suspicious_timeline_values = [entry["suspicious"] for entry in timeline_data]
-
-    classification_display = {
-        "BRUTE_FORCE_ATTACK": "Brute Force Attack",
-        "SQL_INJECTION_ATTEMPT": "SQL Injection Attempt",
-        "SCANNER_BOT_ACTIVITY": "Scanner/Bot Activity",
-        "NORMAL_TRAFFIC": "Normal Traffic",
-    }
-    category_labels = [classification_display.get(entry["attack_classification"], entry["attack_classification"]) for entry in category_data]
-    category_values = [entry["total"] for entry in category_data]
-
-    latest_alerts = AlertEvent.objects.values("timestamp", "alert_type", "detail")[:8]
-    latest_uploads = UploadArtifact.objects.values("timestamp", "filename", "verdict", "entropy")[:8]
-    latest_payments = PaymentRecord.objects.values("timestamp", "payment_id", "status", "amount", "currency")[:8]
-    latest_tickets = SupportTicket.objects.values("timestamp", "ticket_id", "status", "priority")[:8]
-    latest_sessions = TelemetryEvent.objects.values("timestamp", "session_id", "event_type", "path")[:12]
-    top_countries = (
-        ThreatIntelSnapshot.objects.exclude(country="")
-        .values("country")
-        .annotate(total=Count("id"))
-        .order_by("-total")[:8]
-    )
-    attacker_states = build_state_summary(12)
-
-    context = {
-        "total_requests": total_requests,
-        "suspicious_requests": suspicious_requests,
-        "login_attempts": login_attempts,
-        "failed_logins": failed_logins,
-        "selected_interval": selected_interval,
-        "suspicious_rate": round((suspicious_requests / total_requests) * 100, 2) if total_requests else 0,
-        "brute_force_count": brute_force_count,
-        "sqli_count": sqli_count,
-        "scanner_count": scanner_count,
-        "normal_count": normal_count,
-        "top_ips": top_ips,
-        "top_endpoints": top_endpoints,
-        "suspicious_reasons": suspicious_reasons,
-        "daily_labels": daily_labels,
-        "daily_values": daily_values,
-        "endpoint_labels": endpoint_labels,
-        "endpoint_values": endpoint_values,
-        "timeline_labels": timeline_labels,
-        "timeline_values": timeline_values,
-        "suspicious_timeline_values": suspicious_timeline_values,
-        "category_labels": category_labels,
-        "category_values": category_values,
-        "latest_alerts": latest_alerts,
-        "latest_uploads": latest_uploads,
-        "latest_payments": latest_payments,
-        "latest_tickets": latest_tickets,
-        "latest_sessions": latest_sessions,
-        "top_countries": top_countries,
-        "attacker_states": attacker_states,
-    }
-    return render(request, "research_analytics.html", context)
-
-
-def _timeline_attack_match(selected_attack_type: str, entry: dict[str, str]) -> bool:
-    if not selected_attack_type or selected_attack_type == "all":
-        return True
-
-    haystack = " ".join(
-        str(value) for value in [entry.get("kind"), entry.get("label"), entry.get("detail"), entry.get("attack_type"), entry.get("response"), entry.get("source")] if value
-    ).lower()
-    normalized = selected_attack_type.lower().strip()
-    aliases = {
-        "sqli": ["sql", "injection"],
-        "sql_injection": ["sql", "injection"],
-        "scanner": ["scanner", "bot"],
-        "bot": ["scanner", "bot"],
-        "brute_force": ["brute", "login"],
-        "login": ["login"],
-        "alert": ["alert"],
-        "telemetry": ["telemetry", "fingerprint"],
-        "page_visit": ["page", "visit", "request"],
-        "journey": ["journey", "session"],
-    }
-    terms = aliases.get(normalized, [normalized])
-    return any(term in haystack for term in terms)
-
-
-@user_passes_test(lambda user: user.is_staff)
-def attacker_timeline_view(request: HttpRequest) -> HttpResponse:
-    selected_ip = request.GET.get("ip", "").strip()
-    selected_session = request.GET.get("session", "").strip()
-    selected_attack_type = request.GET.get("attack_type", "all").strip() or "all"
-    limit = max(25, min(int(request.GET.get("limit", 160) or 160), 400))
-
-    events: list[dict[str, object]] = []
-
-    def add_event(*, timestamp, kind: str, label: str, detail: str, ip_address: str = "", user_agent: str = "", attack_type: str = "", response: str = "", payload: str = "", source: str = "", session_id_value: str = "") -> None:
-        session_id = session_id_value or derive_session_id(ip_address=ip_address or "", user_agent=user_agent or "")
-        entry = {
-            "timestamp": timestamp,
-            "kind": kind,
-            "label": label,
-            "detail": detail,
-            "ip_address": ip_address,
-            "session_id": session_id,
-            "attack_type": attack_type,
-            "response": response,
-            "payload": payload,
-            "source": source,
-        }
-        if selected_ip and entry["ip_address"] != selected_ip:
-            return
-        if selected_session and selected_session not in {entry["session_id"], session_id_value}:
-            return
-        if not _timeline_attack_match(selected_attack_type, entry):
-            return
-        events.append(entry)
-
-    for item in HoneypotLog.objects.all().order_by("-timestamp")[:limit]:
-        add_event(
-            timestamp=item.timestamp,
-            kind="page_visit",
-            label=item.event_type,
-            detail=item.requested_url,
-            ip_address=item.ip_address or "",
-            user_agent=item.user_agent,
-            attack_type=item.attack_classification,
-            response=str(item.status_code),
-            payload=(item.payload[:180] + "…") if item.payload and len(item.payload) > 180 else item.payload,
-            source="web",
-        )
-
-    for item in LoginAttempt.objects.all().order_by("-timestamp")[:limit]:
-        add_event(
-            timestamp=item.timestamp,
-            kind="login_attempt",
-            label=item.username or "anonymous",
-            detail=item.requested_url or "/login",
-            ip_address=item.ip_address or "",
-            user_agent=item.user_agent,
-            attack_type="brute_force" if not item.success else "login",
-            response="success" if item.success else "failed",
-            payload=(item.password_submitted[:24] + "…") if item.password_submitted else "",
-            source="auth",
-        )
-
-    for item in AlertEvent.objects.all().order_by("-timestamp")[:limit]:
-        metadata = item.metadata or {}
-        add_event(
-            timestamp=item.timestamp,
-            kind="alert",
-            label=item.alert_type,
-            detail=item.detail,
-            ip_address=item.ip_address or "",
-            user_agent=item.user_agent,
-            attack_type=str(metadata.get("source", item.alert_type)).lower(),
-            response=item.dispatch_status,
-            payload=json.dumps(metadata)[:240],
-            source="alert-worker",
-        )
-
-    for item in TelemetryEvent.objects.all().order_by("-timestamp")[:limit]:
-        add_event(
-            timestamp=item.timestamp,
-            kind="telemetry",
-            label=item.event_type,
-            detail=item.path,
-            ip_address=item.ip_address or "",
-            user_agent=item.user_agent,
-            attack_type="telemetry",
-            response="observed",
-            payload=json.dumps(item.details)[:240],
-            source="browser",
-            session_id_value=item.session_id,
-        )
-
-    for item in AttackJourney.objects.all().order_by("-last_seen")[:limit]:
-        add_event(
-            timestamp=item.last_seen,
-            kind="journey",
-            label=item.session_id,
-            detail=item.entry_point or "Unknown entry point",
-            attack_type="journey",
-            response=f"{len(item.recon_path or [])} recon steps",
-            payload=json.dumps({"tools": item.tools_used, "notes": item.notes})[:240],
-            source="journey",
-            session_id_value=item.session_id,
-        )
-
-    events.sort(key=lambda entry: entry["timestamp"] or timezone.now())
-    story_events = events[-80:]
-    story_summary = {
-        "total": len(story_events),
-        "pages": sum(1 for entry in story_events if entry["kind"] == "page_visit"),
-        "logins": sum(1 for entry in story_events if entry["kind"] == "login_attempt"),
-        "alerts": sum(1 for entry in story_events if entry["kind"] == "alert"),
-        "telemetry": sum(1 for entry in story_events if entry["kind"] == "telemetry"),
-        "journeys": sum(1 for entry in story_events if entry["kind"] == "journey"),
-    }
-    selected_story = story_events[-1] if story_events else None
-
-    top_sessions = {}
-    for entry in story_events:
-        top_sessions.setdefault(entry["session_id"], 0)
-        top_sessions[entry["session_id"]] += 1
-
-    session_options = [
-        {"session_id": session_id, "total": total}
-        for session_id, total in sorted(top_sessions.items(), key=lambda item: item[1], reverse=True)[:12]
-    ]
-
-    return render(
-        request,
-        "attacker_timeline.html",
-        {
-            "events": story_events,
-            "story_summary": story_summary,
-            "selected_ip": selected_ip,
-            "selected_session": selected_session,
-            "selected_attack_type": selected_attack_type,
-            "session_options": session_options,
-            "selected_story": selected_story,
-            "attack_type_choices": [
-                ("all", "All Events"),
-                ("page_visit", "Page Visits"),
-                ("login", "Login Attempts"),
-                ("alert", "Alerts"),
-                ("telemetry", "Telemetry"),
-                ("journey", "Journey Records"),
-                ("brute_force", "Brute Force"),
-                ("sqli", "SQL Injection"),
-                ("scanner", "Scanner / Bot"),
-                ("canary_hit", "Canary Hits"),
-            ],
-            "limit_choices": [80, 120, 160, 240, 320],
-        },
-    )
-
-
-@user_passes_test(lambda user: user.is_staff)
 def attacker_timeline_json(request: HttpRequest) -> JsonResponse:
     """Return timeline events as JSON for UI replay controls."""
     selected_ip = request.GET.get("ip", "").strip()
@@ -2252,6 +1871,7 @@ def attacker_timeline_json(request: HttpRequest) -> JsonResponse:
 
     def add_event(*, timestamp, kind: str, label: str, detail: str, ip_address: str = "", user_agent: str = "", attack_type: str = "", response: str = "", payload: str = "", source: str = "", session_id_value: str = "") -> None:
         session_id = session_id_value or derive_session_id(ip_address=ip_address or "", user_agent=user_agent or "")
+        session_id_is_canonical = bool(session_id_value)
         entry = {
             "timestamp": timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp),
             "kind": kind,
@@ -2263,6 +1883,7 @@ def attacker_timeline_json(request: HttpRequest) -> JsonResponse:
             "response": response,
             "payload": payload,
             "source": source,
+            "session_id_is_canonical": session_id_is_canonical,
         }
         if selected_ip and entry["ip_address"] != selected_ip:
             return
@@ -2274,7 +1895,7 @@ def attacker_timeline_json(request: HttpRequest) -> JsonResponse:
     if selected_ip:
         hp_qs = hp_qs.filter(ip_address=selected_ip)
     if selected_session:
-        hp_qs = hp_qs.filter(session_id__icontains=selected_session)
+        hp_qs = hp_qs.filter(session_id=selected_session)
     hp_vals = hp_qs.values(
         "timestamp",
         "event_type",
@@ -2306,7 +1927,7 @@ def attacker_timeline_json(request: HttpRequest) -> JsonResponse:
     if selected_ip:
         la_qs = la_qs.filter(ip_address=selected_ip)
     if selected_session:
-        la_qs = la_qs.filter(session_id__icontains=selected_session)
+        la_qs = la_qs.filter(session_id=selected_session)
     la_vals = la_qs.values("timestamp", "username", "requested_url", "ip_address", "user_agent", "success", "password_submitted", "session_id")[:limit]
     for item in la_vals:
         pw = item.get("password_submitted") or ""
@@ -2324,12 +1945,33 @@ def attacker_timeline_json(request: HttpRequest) -> JsonResponse:
             session_id_value=item.get("session_id", ""),
         )
 
+    from django.db.utils import NotSupportedError
+
     ae_qs = AlertEvent.objects.order_by("-timestamp")
     if selected_ip:
         ae_qs = ae_qs.filter(ip_address=selected_ip)
+
+    # Some DB backends (SQLite) do not support JSONField __contains lookups.
+    # Use a fast DB-side filter on Postgres, otherwise fetch a bounded window
+    # and filter in Python to preserve behavior without raising NotSupportedError.
+
+    ae_vals = []
     if selected_session:
-        ae_qs = ae_qs.filter(metadata__contains={"session_id": selected_session})
-    ae_vals = ae_qs.values("timestamp", "alert_type", "detail", "ip_address", "user_agent", "metadata", "dispatch_status")[:limit]
+        if connection.vendor == 'sqlite':
+            window = max(limit * 10, 1000)
+            raw = list(ae_qs.values("timestamp", "alert_type", "detail", "ip_address", "user_agent", "metadata", "dispatch_status")[:window])
+            for item in raw:
+                metadata = item.get("metadata") or {}
+                if str(metadata.get("session_id", "")) == str(selected_session):
+                    ae_vals.append(item)
+                    if len(ae_vals) >= limit:
+                        break
+        else:
+            ae_filtered = ae_qs.filter(metadata__contains={"session_id": selected_session})
+            ae_vals = list(ae_filtered.values("timestamp", "alert_type", "detail", "ip_address", "user_agent", "metadata", "dispatch_status")[:limit])
+    else:
+        ae_vals = list(ae_qs.values("timestamp", "alert_type", "detail", "ip_address", "user_agent", "metadata", "dispatch_status")[:limit])
+
     for item in ae_vals:
         metadata = item.get("metadata") or {}
         add_event(
@@ -2350,7 +1992,7 @@ def attacker_timeline_json(request: HttpRequest) -> JsonResponse:
     if selected_ip:
         te_qs = te_qs.filter(ip_address=selected_ip)
     if selected_session:
-        te_qs = te_qs.filter(session_id__icontains=selected_session)
+        te_qs = te_qs.filter(session_id=selected_session)
     te_vals = te_qs.values("timestamp", "event_type", "path", "ip_address", "user_agent", "details", "session_id")[:limit]
     for item in te_vals:
         details = item.get("details") or {}
@@ -2370,7 +2012,7 @@ def attacker_timeline_json(request: HttpRequest) -> JsonResponse:
 
     aj_qs = AttackJourney.objects.order_by("-last_seen")
     if selected_session:
-        aj_qs = aj_qs.filter(session_id__icontains=selected_session)
+        aj_qs = aj_qs.filter(session_id=selected_session)
     aj_vals = aj_qs.values("last_seen", "session_id", "entry_point", "recon_path", "tools_used", "notes")[:limit]
     for item in aj_vals:
         recon = item.get("recon_path") or []
@@ -2388,6 +2030,7 @@ def attacker_timeline_json(request: HttpRequest) -> JsonResponse:
         )
 
     events.sort(key=lambda e: e["timestamp"])  # chronological
+    events = events[:limit]
     elapsed = time.perf_counter() - start_time
     end_queries = len(connection.queries) if connection is not None else None
     try:

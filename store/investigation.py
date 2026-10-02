@@ -4,7 +4,8 @@ from datetime import timedelta
 from collections import Counter, defaultdict
 from typing import Any
 
-from django.db.models import Avg, Count, Max, Min
+from django.db.models import Avg, Count, Max, Min, Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from .models import AlertEvent, AttackJourney, AttackerState, DetectionAlert, IOCIndicator, HoneypotLog, LoginAttempt, PaymentRecord, SupportTicket, TelemetryEvent, ThreatIntelSnapshot, UploadArtifact
@@ -59,6 +60,26 @@ def _ioc_group_details(ioc_type: str, ioc_value: str) -> dict[str, Any]:
     indicators = list(
         IOCIndicator.objects.filter(ioc_type=ioc_type, ioc_value=ioc_value)
         .select_related("attack_journey")
+        .only(
+            "id",
+            "session_id",
+            "source_model",
+            "source_object_id",
+            "ioc_type",
+            "ioc_value",
+            "confidence_score",
+            "source_event",
+            "evidence_summary",
+            "attack_phase",
+            "asg_risk_score",
+            "asg_confidence",
+            "attack_journey",
+            "first_seen",
+            "last_seen",
+            "metadata",
+            "attack_journey__session_id",
+            "attack_journey__campaign_id",
+        )
         .order_by("first_seen", "id")
     )
     sessions = _unique_sorted([indicator.session_id for indicator in indicators if indicator.session_id])
@@ -76,6 +97,30 @@ def _ioc_group_details(ioc_type: str, ioc_value: str) -> dict[str, Any]:
         "campaigns": campaigns,
         "indicators": indicators,
     }
+
+
+_IOC_RELATIONSHIP_FIELDS = (
+    "id",
+    "session_id",
+    "source_model",
+    "source_object_id",
+    "ioc_type",
+    "ioc_value",
+    "confidence_score",
+    "source_event",
+    "evidence_summary",
+    "attack_phase",
+    "asg_risk_score",
+    "asg_confidence",
+    "attack_journey",
+    "first_seen",
+    "last_seen",
+    "metadata",
+    "attack_journey__session_id",
+    "attack_journey__campaign_id",
+    "attack_journey__tools_used",
+    "attack_journey__phases",
+)
 
 
 def serialise_ioc_indicator(indicator: IOCIndicator) -> dict[str, Any]:
@@ -105,6 +150,7 @@ def build_ioc_index(*, limit: int = 250) -> list[dict[str, Any]]:
     grouped = (
         IOCIndicator.objects.values("ioc_type", "ioc_value")
         .annotate(
+            representative_id=Min("id"),
             first_seen=Min("first_seen"),
             last_seen=Max("last_seen"),
             occurrence_count=Count("id"),
@@ -116,6 +162,7 @@ def build_ioc_index(*, limit: int = 250) -> list[dict[str, Any]]:
     )
     return [
         {
+            "id": row["representative_id"],
             "ioc_type": row["ioc_type"],
             "ioc_value": row["ioc_value"],
             "first_seen": _iso(row["first_seen"]),
@@ -162,7 +209,12 @@ def get_ioc_detail(ioc_id: int) -> dict[str, Any] | None:
 
 
 def get_ioc_relationships(ioc_id: int) -> dict[str, Any] | None:
-    target = IOCIndicator.objects.select_related("attack_journey").filter(id=ioc_id).first()
+    target = (
+        IOCIndicator.objects.select_related("attack_journey")
+        .only(*_IOC_RELATIONSHIP_FIELDS)
+        .filter(id=ioc_id)
+        .first()
+    )
     if not target:
         return None
 
@@ -173,12 +225,28 @@ def get_ioc_relationships(ioc_id: int) -> dict[str, Any] | None:
     related_indicators = list(
         IOCIndicator.objects.filter(ioc_type=target.ioc_type, ioc_value=target.ioc_value)
         .select_related("attack_journey")
+        .only(*_IOC_RELATIONSHIP_FIELDS)
         .order_by("first_seen", "id")
     )
 
-    same_session = IOCIndicator.objects.filter(session_id__in=base_sessions).exclude(id=target.id).select_related("attack_journey")
-    same_journey = IOCIndicator.objects.filter(attack_journey_id__in=base_journeys).exclude(id=target.id).select_related("attack_journey")
-    same_campaign = IOCIndicator.objects.filter(attack_journey__campaign_id__in=base_campaigns).exclude(id=target.id).select_related("attack_journey")
+    same_session = (
+        IOCIndicator.objects.filter(session_id__in=base_sessions)
+        .exclude(id=target.id)
+        .select_related("attack_journey")
+        .only(*_IOC_RELATIONSHIP_FIELDS)
+    )
+    same_journey = (
+        IOCIndicator.objects.filter(attack_journey_id__in=base_journeys)
+        .exclude(id=target.id)
+        .select_related("attack_journey")
+        .only(*_IOC_RELATIONSHIP_FIELDS)
+    )
+    same_campaign = (
+        IOCIndicator.objects.filter(attack_journey__campaign_id__in=base_campaigns)
+        .exclude(id=target.id)
+        .select_related("attack_journey")
+        .only(*_IOC_RELATIONSHIP_FIELDS)
+    )
 
     shared_sessions = _unique_sorted([indicator.session_id for indicator in related_indicators if indicator.session_id])
     shared_journeys = _unique_sorted([indicator.attack_journey.session_id for indicator in related_indicators if indicator.attack_journey])
@@ -349,15 +417,19 @@ def compare_journeys(journey_1: AttackJourney, journey_2: AttackJourney, journey
 
 
 def build_journey_similarity_pairs(*, limit: int = 20) -> list[dict[str, Any]]:
-    journeys = list(AttackJourney.objects.order_by("-last_seen", "session_id")[: max(limit * 4, 10)])
+    journeys = list(
+        AttackJourney.objects.only(
+            "id",
+            "session_id",
+            "last_seen",
+            "phases",
+            "tools_used",
+            "payload_evolution",
+            "escalation_attempts",
+        ).order_by("-last_seen", "session_id")[: max(limit * 4, 10)]
+    )
     pairs: list[dict[str, Any]] = []
-    # Precompute IOC values per journey to avoid N+1 queries inside compare_journeys
-    journey_ioc_map: dict[int, set[str]] = defaultdict(set)
-    journey_ids = [j.id for j in journeys]
-    if journey_ids:
-        for jid, ioc_value in IOCIndicator.objects.filter(attack_journey_id__in=journey_ids).values_list("attack_journey_id", "ioc_value"):
-            if ioc_value:
-                journey_ioc_map[jid].add(str(ioc_value))
+    journey_ioc_map = _journey_ioc_value_map(journey_ids=[journey.id for journey in journeys])
 
     for index, journey_1 in enumerate(journeys):
         for journey_2 in journeys[index + 1 :]:
@@ -514,10 +586,21 @@ def build_most_connected_iocs(*, limit: int = 20) -> list[dict[str, Any]]:
     return connected[:limit]
 
 
+def _journey_ioc_value_map(*, journey_ids: list[int] | None = None) -> dict[int, set[str]]:
+    journey_ioc_map: dict[int, set[str]] = defaultdict(set)
+    queryset = IOCIndicator.objects.all()
+    if journey_ids is not None:
+        queryset = queryset.filter(attack_journey_id__in=journey_ids)
+    for jid, ioc_value in queryset.values_list("attack_journey_id", "ioc_value"):
+        if ioc_value:
+            journey_ioc_map[jid].add(str(ioc_value))
+    return journey_ioc_map
+
+
 def build_most_reused_attacker_tools(*, limit: int = 20) -> list[dict[str, Any]]:
     counter: Counter[str] = Counter()
-    for journey in AttackJourney.objects.all():
-        counter.update(str(tool) for tool in (journey.tools_used or []) if tool)
+    for tools_used in AttackJourney.objects.values_list("tools_used", flat=True):
+        counter.update(str(tool) for tool in (tools_used or []) if tool)
     return [{"tool": tool, "count": count} for tool, count in counter.most_common(limit)]
 
 
@@ -528,21 +611,28 @@ def build_most_similar_attack_journeys(*, limit: int = 20) -> list[dict[str, Any
 def build_campaigns_with_expanding_activity(*, limit: int = 20) -> list[dict[str, Any]]:
     recent_threshold = timezone.now() - timedelta(days=7)
     campaign_rows: list[dict[str, Any]] = []
-    for campaign_id in AttackJourney.objects.exclude(campaign_id="").values_list("campaign_id", flat=True).distinct():
-        journeys = list(AttackJourney.objects.filter(campaign_id=campaign_id).order_by("last_seen", "session_id"))
-        if not journeys:
-            continue
-        recent_count = sum(1 for journey in journeys if journey.last_seen and journey.last_seen >= recent_threshold)
-        older_count = len(journeys) - recent_count
+    aggregated_rows = (
+        AttackJourney.objects.exclude(campaign_id="")
+        .values("campaign_id")
+        .annotate(
+            total_journeys=Count("id"),
+            recent_journey_count=Count("id", filter=Q(last_seen__gte=recent_threshold)),
+            first_seen=Min(Coalesce("first_seen", "last_seen")),
+            last_seen=Max("last_seen"),
+        )
+    )
+    for row in aggregated_rows:
+        recent_count = int(row["recent_journey_count"] or 0)
+        total_journeys = int(row["total_journeys"] or 0)
         campaign_rows.append(
             {
-                "campaign_id": campaign_id,
-                "total_journeys": len(journeys),
+                "campaign_id": row["campaign_id"],
+                "total_journeys": total_journeys,
                 "recent_journey_count": recent_count,
-                "older_journey_count": older_count,
-                "activity_trend_score": recent_count - older_count,
-                "first_seen": _iso(min((journey.first_seen or journey.last_seen for journey in journeys), default=None)),
-                "last_seen": _iso(max((journey.last_seen for journey in journeys), default=None)),
+                "older_journey_count": total_journeys - recent_count,
+                "activity_trend_score": recent_count - (total_journeys - recent_count),
+                "first_seen": _iso(row["first_seen"]),
+                "last_seen": _iso(row["last_seen"]),
             }
         )
     campaign_rows.sort(key=lambda item: (item["activity_trend_score"], item["total_journeys"], item["last_seen"] or ""), reverse=True)
@@ -889,7 +979,7 @@ def build_investigation_timeline(*, session_id: str = "", campaign_id: str = "",
     return events[:limit]
 
 
-def build_campaign_dashboard_aggregates(*, limit: int = 250) -> dict[str, Any]:
+def build_campaign_dashboard_aggregates(*, limit: int = 250, campaign_summaries: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     ioc_type_rows = list(
         IOCIndicator.objects.values("ioc_type")
         .annotate(total=Count("id"))
@@ -898,29 +988,41 @@ def build_campaign_dashboard_aggregates(*, limit: int = 250) -> dict[str, Any]:
     ioc_group_rows = list(
         IOCIndicator.objects.values("ioc_type", "ioc_value")
         .annotate(total=Count("id"))
-        .order_by("-total", "ioc_type", "ioc_value")[:limit]
+        .order_by("-total", "ioc_type", "ioc_value")[:20]
     )
 
-    campaign_summaries = build_campaign_summaries(limit=limit)
-    journeys = _campaign_journeys_by_session()
+    if campaign_summaries is None:
+        campaign_summaries = build_campaign_summaries(limit=limit)
 
     ip_counter = Counter()
     url_counter = Counter()
     email_counter = Counter()
     hash_counter = Counter()
-    for indicator in IOCIndicator.objects.all().order_by("-last_seen")[: limit * 20]:
-        if indicator.ioc_type == "ip":
-            ip_counter[indicator.ioc_value] += 1
-        elif indicator.ioc_type == "url":
-            url_counter[indicator.ioc_value] += 1
-        elif indicator.ioc_type == "email":
-            email_counter[indicator.ioc_value] += 1
-        elif indicator.ioc_type == "hash":
-            hash_counter[indicator.ioc_value] += 1
+    ip_rows = IOCIndicator.objects.filter(ioc_type="ip").values("ioc_value").annotate(total=Count("id")).order_by("-total", "ioc_value")[:10]
+    url_rows = IOCIndicator.objects.filter(ioc_type="url").values("ioc_value").annotate(total=Count("id")).order_by("-total", "ioc_value")[:10]
+    email_rows = IOCIndicator.objects.filter(ioc_type="email").values("ioc_value").annotate(total=Count("id")).order_by("-total", "ioc_value")[:10]
+    hash_rows = IOCIndicator.objects.filter(ioc_type="hash").values("ioc_value").annotate(total=Count("id")).order_by("-total", "ioc_value")[:10]
 
-    phase_counter = Counter(_phase_name(phase) for journey in AttackJourney.objects.all()[: limit * 3] for phase in (journey.phases or []))
-    tool_counter = Counter(str(tool) for journey in AttackJourney.objects.all()[: limit * 3] for tool in (journey.tools_used or []) if tool)
-    trend_counter = Counter(journey.campaign_id for journey in AttackJourney.objects.exclude(campaign_id="").order_by("last_seen")[: limit * 3])
+    for row in ip_rows:
+        ip_counter[str(row["ioc_value"])] += int(row["total"])
+    for row in url_rows:
+        url_counter[str(row["ioc_value"])] += int(row["total"])
+    for row in email_rows:
+        email_counter[str(row["ioc_value"])] += int(row["total"])
+    for row in hash_rows:
+        hash_counter[str(row["ioc_value"])] += int(row["total"])
+
+    phase_counter = Counter()
+    tool_counter = Counter()
+    trend_counter = Counter()
+    for phases, tools, campaign_id in AttackJourney.objects.exclude(session_id="").values_list("phases", "tools_used", "campaign_id").iterator(chunk_size=200):
+        if campaign_id:
+            trend_counter[str(campaign_id)] += 1
+        for phase in phases or []:
+            phase_counter[_phase_name(phase)] += 1
+        for tool in tools or []:
+            if tool:
+                tool_counter[str(tool)] += 1
 
     def _enrich_ip(value: str, count: int) -> dict[str, Any]:
         snapshot = (
@@ -950,7 +1052,7 @@ def build_campaign_dashboard_aggregates(*, limit: int = 250) -> dict[str, Any]:
         "most_common_attack_phases": [{"value": phase, "count": count} for phase, count in phase_counter.most_common(10)],
         "most_common_attacker_tools": [{"value": tool, "count": count} for tool, count in tool_counter.most_common(10)],
         "ioc_type_counts": ioc_type_rows,
-        "ioc_value_counts": ioc_group_rows[:20],
+        "ioc_value_counts": ioc_group_rows,
         "most_connected_iocs": build_most_connected_iocs(limit=limit),
         "most_reused_attacker_tools": build_most_reused_attacker_tools(limit=limit),
         "most_similar_attack_journeys": build_most_similar_attack_journeys(limit=limit),

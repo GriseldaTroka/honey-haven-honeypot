@@ -590,6 +590,24 @@ def build_detection_dashboard(*, limit: int = 100) -> dict[str, Any]:
     }
 
 
+def build_detection_overview_payload() -> dict[str, Any]:
+    """Lightweight detection block for dashboard overview.
+
+    Keep `active_alerts` semantics identical to `build_detection_dashboard`
+    while avoiding heavy alert serialization in the overview payload.
+    """
+    active_alerts = DetectionAlert.objects.filter(status__in=OPEN_STATUSES).count()
+    return {
+        "active_alerts": active_alerts,
+        "alerts_by_severity": [],
+        "most_triggered_rules": [],
+        "highest_risk_campaigns": [],
+        "unresolved_incidents": [],
+        "average_resolution_time_minutes": None,
+        "recent_detections": [],
+    }
+
+
 def build_detection_alert_detail(alert: DetectionAlert) -> dict[str, Any]:
     journey = alert.attack_journey
     session_iocs = _bounded_session_iocs(alert.session_id, limit=25)
